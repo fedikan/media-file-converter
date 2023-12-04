@@ -1,4 +1,4 @@
-name: AIPHORIA_MIND_DEPLOY
+name: AIPHORIA_CONVERTER_DEPLOY
 on:
   push:
     branches:
