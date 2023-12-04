@@ -2,7 +2,7 @@ name: AIPHORIA_CONVERTER_DEPLOY
 on:
   push:
     branches:
-      - main
+      - master
 
 env:
   GO_TO_FOLDER_SCRIPT:  cd ~/aiphoria/audio-converter
