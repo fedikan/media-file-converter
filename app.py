@@ -7,7 +7,6 @@ app = Flask(__name__)
 
 @app.route('/convert', methods=['POST'])
 def convert_audio():
-    print('llllllooooll')
     # Check if the post request has the file part
     if 'file' not in request.files:
         return 'No file part', 400
@@ -31,12 +30,6 @@ def convert_audio():
 
         # Send the converted file
         return send_file(output_path, as_attachment=True)
-
-@app.route('/test', methods=['GET'])
-def test():
-    print('llllllooooll')
-    return 'jahahahha'
-   
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

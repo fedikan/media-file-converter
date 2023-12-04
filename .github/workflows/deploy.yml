@@ -1,0 +1,30 @@
+name: AIPHORIA_MIND_DEPLOY
+on:
+  push:
+    branches:
+      - main
+
+env:
+  GO_TO_FOLDER_SCRIPT:  cd ~/aiphoria/audio-converter
+  BUILD_SCRIPT: docker-compose up -d --build --force-recreate
+  PRUNE_SCRIPT: docker system prune -f
+
+jobs:
+  ssh_access:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          port: ${{ secrets.PORT }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.KEY }}
+          script: |
+            ${{ env.GO_TO_FOLDER_SCRIPT }}
+            git pull
+            ${{ env.BUILD_SCRIPT }}
+            ${{ env.PRUNE_SCRIPT }}
+            docker ps
+
