@@ -29,21 +29,27 @@ async function findAndProcessFiles() {
     });
 
     for (const file of files) {
-      console.log(file.fileUrl)
-      const response = await axios.get(file.fileUrl, {
-        responseType: 'arraybuffer'
-      });
+      try{
 
-      if (response.status === 200) {
-        const fileBuffer = Buffer.from(response.data);
-        const optimizedFile = await uploadAudio(fileBuffer, { meta: file.meta, userId: file.userId }, 'wav');
-        file.fileUrl = optimizedFile.fileUrl
-        await file.save()
-        console.log('File processed:', optimizedFile);
-      } else {
-        console.error('Failed to download file:', file.fileUrl);
+        console.log(file.fileUrl)
+        const response = await axios.get(file.fileUrl, {
+          responseType: 'arraybuffer'
+        });
+        
+        if (response.status === 200) {
+          const fileBuffer = Buffer.from(response.data);
+          const optimizedFile = await uploadAudio(fileBuffer, { meta: file.meta, userId: file.userId }, 'wav');
+          file.fileUrl = optimizedFile.fileUrl
+          await file.save()
+          console.log('File processed:', optimizedFile);
+        } else {
+          console.error('Failed to download file:', file.fileUrl);
+        }
+      } catch(e){
+        console.log('Error processing file:', e)
       }
     }
+    console.log("ITS DONe")
   } catch (error) {
     console.error('Error processing files:', error);
   }
