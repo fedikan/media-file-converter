@@ -25,7 +25,7 @@ def convert_audio():
 
         # Convert the file
         stream = ffmpeg.input(input_path)
-        stream = ffmpeg.output(stream, output_path)
+        stream = ffmpeg.output(stream, output_path, audio_bitrate='320k')
         ffmpeg.run(stream)
 
         # Send the converted file
