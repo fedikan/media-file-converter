@@ -25,14 +25,14 @@ async function findAndProcessFiles() {
     console.log('mongo connected')
     const files = await File.find({
       'meta.fileType': { $in: ['musicgen', 'bark', 'riffusion'] },
-      'fileUrl': /\.wav$/
+      'originalUrl': /\.wav$/
     });
 
     for (const file of files) {
       try{
 
-        console.log(file.fileUrl)
-        const response = await axios.get(file.fileUrl, {
+        console.log(file.originalUrl)
+        const response = await axios.get(file.originalUrl, {
           responseType: 'arraybuffer'
         });
         
@@ -43,7 +43,7 @@ async function findAndProcessFiles() {
           await file.save()
           console.log('File processed:', optimizedFile);
         } else {
-          console.error('Failed to download file:', file.fileUrl);
+          console.error('Failed to download file:', file.originalUrl);
         }
       } catch(e){
         console.log('Error processing file:', e)
