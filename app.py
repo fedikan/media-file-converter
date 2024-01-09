@@ -1,10 +1,13 @@
-from flask import Flask, request, send_file
+from flask import Flask, request, jsonify
 import ffmpeg
 import os
 import uuid
-import numpy as np
 from scipy.io import wavfile
 from scipy.signal import find_peaks
+import numpy as np
+import os
+import uuid
+import wave
 
 app = Flask(__name__)
 
@@ -43,33 +46,60 @@ def get_peaks():
     if file.filename == '':
         return 'No selected file', 400
     if file:
-        # Save the original file
+        # Save the uploaded file
         original_filename = str(uuid.uuid4())
-        input_path = f'/tmp/{original_filename}.wav'
+        input_path = f'/tmp/{original_filename}'
+        output_wav_path = f'{input_path}.wav'
         file.save(input_path)
 
-        # Read the WAV file
-        sample_rate, audio_data = wavfile.read(input_path)
-        
-        # Calculate the number of peaks per second
-        duration_in_seconds = len(audio_data) / sample_rate
-        peaks_per_second = 20  # Adjust this value as needed
-        total_peaks = int(duration_in_seconds * peaks_per_second)
-        
-        # Find peaks
-        peaks, _ = find_peaks(audio_data, distance=sample_rate/peaks_per_second)
-        
-        # Select the first 'total_peaks' peakse
-        selected_peaks = peaks[:total_peaks]
-        
-        # Convert selected peaks to time
-        peak_times = selected_peaks / sample_rate
-        
-        # Clean up the temporary file
+        # Convert the file to WAV format for processing
+        ffmpeg.input(input_path).output(output_wav_path).run()
+
+        # Read the WAV file data
+        with wave.open(output_wav_path, 'r') as wav_file:
+            frames = wav_file.readframes(wav_file.getnframes())
+            channels = wav_file.getnchannels()
+            sample_rate = wav_file.getframerate()  # Get the sample rate from the file
+            channels = wav_file.getnchannels()
+            # Convert frames to numpy array
+            frame_data = np.frombuffer(frames, dtype=np.int16)
+            if channels == 1:
+                # Duplicate the mono channel data for stereo processing
+                left_channel = right_channel = frame_data
+            elif channels == 2:
+                # Split stereo into left and right channels
+                left_channel = frame_data[::2]
+                right_channel = frame_data[1::2]
+            else:
+                return 'Audio file has more than 2 channels', 400
+
+    
+        # Find peaks for WaveSurfer
+        left_peaks = calculate_peaks(left_channel, sample_rate)
+        right_peaks = calculate_peaks(right_channel, sample_rate)
+
+        # Clean up the temporary files
         os.remove(input_path)
-        
-        # Return the peak times as a JSON response
-        return {'peaks': peak_times.tolist()}
+        os.remove(output_wav_path)
+
+        # Return the peaks as JSON
+        return jsonify({'left_peaks': left_peaks, 'right_peaks': right_peaks})
+
+
+
+def calculate_peaks(channel_data, sample_rate, time_interval=0.01):
+    # Calculate peaks for visualization in WaveSurfer
+    # time_interval is the time duration (in seconds) for which we calculate a single peak
+    window_size = int(sample_rate * time_interval)
+    peaks = []
+    for i in range(0, len(channel_data), window_size):
+        window = channel_data[i:i+window_size]
+        if len(window) == 0:
+            break
+        peak = np.max(np.abs(window)) / 32767.0  # Normalize to range [-1, 1]
+        peaks.append(float(peak))
+    return peaks
+
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

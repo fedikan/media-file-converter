@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const fs = require('fs');
 const axios = require('axios');
 const { PutObjectCommand, S3Client, ObjectCannedACL } = require('@aws-sdk/client-s3');
 
@@ -26,7 +27,7 @@ async function findAndProcessFiles() {
     console.log('mongo connected')
     const files = await File.find({
       'meta.fileType': { $in: ['musicgen', 'bark', 'riffusion'] },
-      'originalUrl': /\.wav$/
+      // '_id': '659022c0555be514789e3c69'
     });
 
     for (const file of files) {
@@ -40,9 +41,10 @@ async function findAndProcessFiles() {
         if (response.status === 200) {
           const fileBuffer = Buffer.from(response.data);
           const peaks = await convertAudioFile(fileBuffer)
-
-          file.peaks = peaks
-          await file.save()
+          console.log(peaks);
+          fs.writeFileSync('peaks.json', JSON.stringify(peaks));
+          // file.peaks = peaks
+          // await file.save()
         } else {
           console.error('Failed to download file:', file.originalUrl);
         }
@@ -53,32 +55,6 @@ async function findAndProcessFiles() {
     console.log("ITS DONe")
   } catch (error) {
     console.error('Error processing files:', error);
-  }
-}
-const uploadToS3 = async (buffer, filename) => {
-  const s3Client = new S3Client({
-    endpoint: 'https://ams3.digitaloceanspaces.com',
-    forcePathStyle: false,
-    region: 'us-east-1',
-    credentials: {
-      accessKeyId: 'DO004C3EYEC2JLN9FJ6X',
-      secretAccessKey: 'rqSKvnbR7uIEDW6XrAxhaNHpUPEF1dcUIqzEWYsN8Tw',
-    },
-
-  });
-  const params = {
-    Bucket: 'aiphoria-storage',
-    Key: filename,
-    Body: buffer,
-    ACL: 'public-read'
-  };
-
-  try {
-    await s3Client.send(new PutObjectCommand(params));
-    console.log('Successfully uploaded file:', filename);
-  } catch (err) {
-    console.log('Error uploading file:', err);
-    throw new Error('Error uploading file to S3');
   }
 }
 
@@ -106,8 +82,7 @@ async function convertAudioFile(fileBuffer,outputFormat = 'wav') {
   const response = await axios.post('http://localhost:5000/peaks', formData);
 
   if (response.status === 200) {
-    console.log(response)
-    return response.data.peaks;
+    return response.data;
   } else {
     throw new Error('Audio conversion failed');
   }

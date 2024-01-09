@@ -8,7 +8,7 @@ RUN apt-get update && \
 
 RUN pip install --upgrade pip
 # Install Python dependencies
-RUN pip install Flask ffmpeg-python numpy wavfile scipy 
+RUN pip install Flask ffmpeg-python numpy wavfile scipy wave
 
 # Set the working directory
 WORKDIR /app
