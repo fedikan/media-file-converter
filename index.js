@@ -41,10 +41,10 @@ async function findAndProcessFiles() {
         if (response.status === 200) {
           const fileBuffer = Buffer.from(response.data);
           const peaks = await convertAudioFile(fileBuffer)
-          console.log(peaks);
-          fs.writeFileSync('peaks.json', JSON.stringify(peaks));
-          // file.peaks = peaks
-          // await file.save()
+          file.peaks = peaks
+          await file.save()
+          console.log(peaks.left_peaks.length + ' Peaks added at ' + file.originalUrl);
+
         } else {
           console.error('Failed to download file:', file.originalUrl);
         }
