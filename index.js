@@ -107,7 +107,7 @@ async function convertAudioFile(fileBuffer,outputFormat = 'wav') {
 
   if (response.status === 200) {
     console.log(response)
-    return response.data;
+    return response.data.peaks;
   } else {
     throw new Error('Audio conversion failed');
   }
