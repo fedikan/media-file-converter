@@ -6,6 +6,7 @@ const fileSchema = new mongoose.Schema({
   fileUrl: { type: String, required: true },
   originalUrl: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
+  peaks: {type:Array, default: []},
   meta: {
     fileType: { type: String },
     isDefault: { type: Boolean }
@@ -38,10 +39,10 @@ async function findAndProcessFiles() {
         
         if (response.status === 200) {
           const fileBuffer = Buffer.from(response.data);
-          const optimizedFile = await uploadAudio(fileBuffer, { meta: file.meta, userId: file.userId }, 'wav');
-          file.fileUrl = optimizedFile.fileUrl
+          const peaks = await convertAudioFile(fileBuffer)
+
+          file.peaks = peaks
           await file.save()
-          console.log('File processed:', optimizedFile);
         } else {
           console.error('Failed to download file:', file.originalUrl);
         }
@@ -83,11 +84,9 @@ const uploadToS3 = async (buffer, filename) => {
 
 async function uploadAudio(fileBuffer, { meta, userId }, outputFormat) {
   const timestamp = Math.round(Date.now() * Math.random());
-  const optimizedFilename = `optimized_${timestamp}.mp3`;
 
-  const convertedBuffer = await convertAudioFile(fileBuffer, outputFormat)
+  const peaks = await convertAudioFile(fileBuffer, outputFormat)
 
-  await uploadToS3(convertedBuffer, optimizedFilename);
 
   return ({
     fileUrl: 'https://aiphoria-storage.ams3.cdn.digitaloceanspaces.com/' + optimizedFilename,
@@ -96,7 +95,7 @@ async function uploadAudio(fileBuffer, { meta, userId }, outputFormat) {
   })
 }
 
-async function convertAudioFile(fileBuffer, outputFormat) {
+async function convertAudioFile(fileBuffer,outputFormat = 'wav') {
   // ... your convertAudioFile function here
   const formData = new FormData();
   const mimeType = `audio/${outputFormat}`;
@@ -104,11 +103,10 @@ async function convertAudioFile(fileBuffer, outputFormat) {
 
   formData.append('file', blob, 'file.wav');
 
-  const response = await axios.post('http://localhost:5000/convert', formData, {
-    responseType: 'arraybuffer',
-  });
+  const response = await axios.post('http://localhost:5000/peaks', formData);
 
   if (response.status === 200) {
+    console.log(response)
     return response.data;
   } else {
     throw new Error('Audio conversion failed');

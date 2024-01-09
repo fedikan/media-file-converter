@@ -6,9 +6,9 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+RUN pip install --upgrade pip
 # Install Python dependencies
-RUN pip install Flask ffmpeg-python
-
+RUN pip install Flask ffmpeg-python numpy wavfile scipy 
 
 # Set the working directory
 WORKDIR /app
