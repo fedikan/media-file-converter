@@ -9,9 +9,9 @@ services:
     restart: always
     ports:
       - 5000:5000
-    # networks:
-      # - aiphoria_network
-      # - aiphoria_network_dev
+    networks:
+      - aiphoria_network
+      - aiphoria_network_dev
 networks:
   aiphoria_network_dev:
     external: true 
