@@ -7,7 +7,7 @@ const fileSchema = new mongoose.Schema({
   fileUrl: { type: String, required: true },
   originalUrl: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
-  peaks: {type:Array, default: []},
+  peaks: {type:Object, default:{}},
   meta: {
     fileType: { type: String },
     isDefault: { type: Boolean }
@@ -39,11 +39,9 @@ async function findAndProcessFiles() {
         });
         
         if (response.status === 200) {
-          const fileBuffer = Buffer.from(response.data);
-          const peaks = await convertAudioFile(fileBuffer)
-          file.peaks = peaks
+          file.peaks = file.peaks[0]
           await file.save()
-          console.log(peaks.left_peaks.length + ' Peaks added at ' + file.originalUrl);
+          console.log(' Peaks added at ' + file.originalUrl);
 
         } else {
           console.error('Failed to download file:', file.originalUrl);
