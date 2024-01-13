@@ -97,9 +97,7 @@ def calculate_peaks(channel_data, sample_rate, num_peaks=300):
         if len(window) == 0:
             break
         peak = np.max(np.abs(window)) / 32767.0  # Normalize to range [-1, 1]
-        # Scale the peak value to the range [0, 1000] and convert to integer
-        scaled_peak = int(peak * 1000)
-        peaks.append(scaled_peak)
+        peaks.append(peak)
     return peaks
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

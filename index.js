@@ -26,8 +26,8 @@ async function findAndProcessFiles() {
     await mongoose.connect('mongodb://threeheadcrow:125373nogolem@104.248.247.171:8888/openai_completions?authMechanism=DEFAULT&authSource=admin');
     console.log('mongo connected')
     const files = await File.find({
-      // 'meta.fileType': { $in: ['musicgen', 'bark', 'riffusion'] },
-      '_id': '6570adb624e2357fad3201fe'
+      'meta.fileType': { $in: ['musicgen', 'bark', 'riffusion'] },
+     // '_id': '6570adb624e2357fad3201fe'
     });
 
     for (const file of files) {
@@ -42,6 +42,7 @@ async function findAndProcessFiles() {
           const peaks = await convertAudioFile(fileBuffer)
           file.peaks = peaks
           await file.save()
+          console.log(`${file.originalUrl} analyzed`);
 
         } else {
           console.error('Failed to download file:', file.originalUrl);
