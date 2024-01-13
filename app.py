@@ -85,21 +85,21 @@ def get_peaks():
         # Return the peaks as JSON
         return jsonify({'left_peaks': left_peaks, 'right_peaks': right_peaks})
 
-
-
-def calculate_peaks(channel_data, sample_rate, time_interval=0.01):
+def calculate_peaks(channel_data, sample_rate, num_peaks=300):
     # Calculate peaks for visualization in WaveSurfer
-    # time_interval is the time duration (in seconds) for which we calculate a single peak
-    window_size = int(sample_rate * time_interval)
+    # num_peaks is the fixed number of peaks we want to calculate
+    window_size = len(channel_data) // num_peaks
     peaks = []
-    for i in range(0, len(channel_data), window_size):
-        window = channel_data[i:i+window_size]
+    for i in range(num_peaks):
+        window_start = i * window_size
+        window_end = window_start + window_size
+        window = channel_data[window_start:window_end]
         if len(window) == 0:
             break
         peak = np.max(np.abs(window)) / 32767.0  # Normalize to range [-1, 1]
-        peaks.append(float(peak))
+        # Scale the peak value to the range [0, 1000] and convert to integer
+        scaled_peak = int(peak * 1000)
+        peaks.append(scaled_peak)
     return peaks
-
-
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

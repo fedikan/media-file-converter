@@ -7,7 +7,7 @@ const fileSchema = new mongoose.Schema({
   fileUrl: { type: String, required: true },
   originalUrl: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
-  peaks: {type:Object, default:{}},
+  peaks: { type: Object, default: {} },
   meta: {
     fileType: { type: String },
     isDefault: { type: Boolean }
@@ -26,27 +26,27 @@ async function findAndProcessFiles() {
     await mongoose.connect('mongodb://threeheadcrow:125373nogolem@104.248.247.171:8888/openai_completions?authMechanism=DEFAULT&authSource=admin');
     console.log('mongo connected')
     const files = await File.find({
-      'meta.fileType': { $in: ['musicgen', 'bark', 'riffusion'] },
-      // '_id': '659022c0555be514789e3c69'
+      // 'meta.fileType': { $in: ['musicgen', 'bark', 'riffusion'] },
+      '_id': '6570adb624e2357fad3201fe'
     });
 
     for (const file of files) {
-      try{
+      try {
 
-        console.log(file.originalUrl)
         const response = await axios.get(file.originalUrl, {
           responseType: 'arraybuffer'
         });
-        
+
         if (response.status === 200) {
-          file.peaks = file.peaks[0]
+          const fileBuffer = Buffer.from(response.data);
+          const peaks = await convertAudioFile(fileBuffer)
+          file.peaks = peaks
           await file.save()
-          console.log(' Peaks added at ' + file.originalUrl);
 
         } else {
           console.error('Failed to download file:', file.originalUrl);
         }
-      } catch(e){
+      } catch (e) {
         console.log('Error processing file:', e)
       }
     }
@@ -69,7 +69,7 @@ async function uploadAudio(fileBuffer, { meta, userId }, outputFormat) {
   })
 }
 
-async function convertAudioFile(fileBuffer,outputFormat = 'wav') {
+async function convertAudioFile(fileBuffer, outputFormat = 'wav') {
   // ... your convertAudioFile function here
   const formData = new FormData();
   const mimeType = `audio/${outputFormat}`;
