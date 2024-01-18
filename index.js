@@ -39,8 +39,10 @@ async function findAndProcessFiles() {
 
         if (response.status === 200) {
           const fileBuffer = Buffer.from(response.data);
-          const peaks = await convertAudioFile(fileBuffer)
-          file.peaks = peaks
+          const analysisResponse = await convertAudioFile(fileBuffer)
+          file.duration = analysisResponse.duration
+          delete analysisResponse.duration
+          file.peaks = analysisResponse
           await file.save()
           console.log(`${file.originalUrl} analyzed`);
 
@@ -78,7 +80,7 @@ async function convertAudioFile(fileBuffer, outputFormat = 'wav') {
 
   formData.append('file', blob, 'file.wav');
 
-  const response = await axios.post('http://localhost:5000/peaks', formData);
+  const response = await axios.post('http://localhost:5000/track-meta', formData);
 
   if (response.status === 200) {
     return response.data;

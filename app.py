@@ -37,8 +37,8 @@ def convert_audio():
         # Send the converted file
         return send_file(output_path, as_attachment=True)
 
-@app.route('/peaks', methods=['POST'])
-def get_peaks():
+@app.route('/track-meta', methods=['POST'])
+def get_track_meta():
     # Check if the post request has the file part
     if 'file' not in request.files:
         return 'No file part', 400
@@ -60,7 +60,9 @@ def get_peaks():
             frames = wav_file.readframes(wav_file.getnframes())
             channels = wav_file.getnchannels()
             sample_rate = wav_file.getframerate()  # Get the sample rate from the file
-            channels = wav_file.getnchannels()
+            num_frames = wav_file.getnframes()  # Get the number of frames from the file
+            duration = num_frames / float(sample_rate)  # Calculate the duration of the track
+
             # Convert frames to numpy array
             frame_data = np.frombuffer(frames, dtype=np.int16)
             if channels == 1:
@@ -73,7 +75,6 @@ def get_peaks():
             else:
                 return 'Audio file has more than 2 channels', 400
 
-    
         # Find peaks for WaveSurfer
         left_peaks = calculate_peaks(left_channel, sample_rate)
         right_peaks = calculate_peaks(right_channel, sample_rate)
@@ -82,8 +83,7 @@ def get_peaks():
         os.remove(input_path)
         os.remove(output_wav_path)
 
-        # Return the peaks as JSON
-        return jsonify({'left_peaks': left_peaks, 'right_peaks': right_peaks})
+        return jsonify({'left_peaks': left_peaks, 'right_peaks': right_peaks, 'duration': duration})
 
 def calculate_peaks(channel_data, sample_rate, num_peaks=300):
     # Calculate peaks for visualization in WaveSurfer
@@ -98,6 +98,7 @@ def calculate_peaks(channel_data, sample_rate, num_peaks=300):
             break
         peak = np.max(np.abs(window)) / 32767.0  # Normalize to range [-1, 1]
         peaks.append(peak)
+        
     return peaks
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
