@@ -12,6 +12,7 @@ const fileSchema = new mongoose.Schema({
     fileType: { type: String },
     isDefault: { type: Boolean }
   },
+  duration: {type: Number}, 
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
 
