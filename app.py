@@ -185,4 +185,4 @@ def calculate_peaks(channel_data, sample_rate, num_peaks=300):
         
     return peaks
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=6000)
+    app.run(debug=True, host='0.0.0.0', port=5000)
