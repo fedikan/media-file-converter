@@ -113,7 +113,7 @@ def convert_image():
         with Image.open(input_path) as img:
             # If dimensions are provided, resize the image
             if width > 0 and height > 0:
-                img = img.resize((width, height), Image.ANTIALIAS)
+                img = img.resize((width, height), Image.Resampling.LANCZOS)
             
             output_filename = f'{original_filename}.{output_format}'
             output_path = f'/tmp/{output_filename}'
@@ -130,13 +130,19 @@ def convert_image():
 
     return 'Unsupported file type', 400
 
-
 def resize_and_pad(img, desired_dimensions):
     img_ratio = img.width / img.height
     closest_fit = min(desired_dimensions, key=lambda x: abs((x[0]/x[1]) - img_ratio))
     
-    # Resize image to maintain aspect ratio
-    img = img.resize((closest_fit[0], int(closest_fit[0] / img_ratio)), Image.ANTIALIAS)
+    # Determine scaling direction
+    scale_based_on_width = img_ratio >= 1
+    
+    if scale_based_on_width:
+        new_height = int(closest_fit[0] / img_ratio)
+        img = img.resize((closest_fit[0], new_height), Image.Resampling.LANCZOS)
+    else:
+        new_width = int(closest_fit[1] * img_ratio)
+        img = img.resize((new_width, closest_fit[1]), Image.Resampling.LANCZOS)
     
     # Create a new image with desired dimensions and paste the resized image
     new_img = Image.new("RGB", closest_fit, (255, 255, 255))
@@ -146,24 +152,36 @@ def resize_and_pad(img, desired_dimensions):
 
 @app.route('/convert-reference', methods=['POST'])
 def convert_reference():
-    data = request.json
-    image_url = data.get('image_url')
-    if not image_url:
-        return jsonify({'error': 'No image URL provided'}), 400
+     # Check if the post request has the file part and required parameters
+    if 'file' not in request.files:
+        return 'No file part', 400
+    file = request.files['file']
+    if file.filename == '':
+        return 'No selected file', 400
+
+    output_format = request.form.get('outputFormat', 'webp').lower()  # Default to webp if not specified
+    original_filename = str(uuid.uuid4())
     
     try:
-        response = requests.get(image_url)
-        img = Image.open(BytesIO(response.content))
+        
+        img = Image.open(file.stream)
         desired_dimensions = [
             (1024, 1024), (1152, 896), (1216, 832), (1344, 768), (1536, 640),
             (640, 1536), (768, 1344), (832, 1216), (896, 1152)
         ]
+        output_filename = f'{original_filename}.{output_format}'
+
         converted_img = resize_and_pad(img, desired_dimensions)
+        output_path = f'/tmp/{output_filename}'
         
-        temp_path = "optimized_reference.png"
-        converted_img.save(temp_path)
+       # Convert and save the image in the specified format with optimization
+        if output_format == 'webp':
+            converted_img.save(output_path, format='WEBP', quality=80, method=6)  # High quality and compression for web
+        else:
+            # For other formats, adjust quality and parameters as needed
+            converted_img.save(output_path, format=output_format.upper())
         
-        return send_file(temp_path, as_attachment=True, attachment_filename='optimized_reference.png')
+        return send_file(output_path, as_attachment=True, attachment_filename='optimized_reference.png')
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
