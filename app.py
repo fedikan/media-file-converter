@@ -8,6 +8,7 @@ import numpy as np
 import os
 import uuid
 import wave
+from PIL import Image
 
 app = Flask(__name__)
 
@@ -85,6 +86,50 @@ def get_track_meta():
 
         return jsonify({'left_peaks': left_peaks, 'right_peaks': right_peaks, 'duration': duration})
 
+@app.route('/convert-image', methods=['POST'])
+def convert_image():
+    # Check if the post request has the file part and required parameters
+    if 'file' not in request.files:
+        return 'No file part', 400
+    file = request.files['file']
+    if file.filename == '':
+        return 'No selected file', 400
+
+    # Check for output format in the request
+    output_format = request.form.get('outputFormat', 'webp').lower()  # Default to webp if not specified
+    try:
+        width = int(request.form.get('width', 0))
+        height = int(request.form.get('height', 0))
+    except ValueError:
+        return 'Invalid width or height', 400
+
+    if file:
+        # Save the original file
+        original_filename = str(uuid.uuid4())
+        input_path = f'/tmp/{original_filename}'
+        file.save(input_path)
+
+        # Open the image file
+        with Image.open(input_path) as img:
+            # If dimensions are provided, resize the image
+            if width > 0 and height > 0:
+                img = img.resize((width, height), Image.ANTIALIAS)
+            
+            output_filename = f'{original_filename}.{output_format}'
+            output_path = f'/tmp/{output_filename}'
+
+            # Convert and save the image in the specified format with optimization
+            if output_format == 'webp':
+                img.save(output_path, format='WEBP', quality=80, method=6)  # High quality and compression for web
+            else:
+                # For other formats, adjust quality and parameters as needed
+                img.save(output_path, format=output_format.upper())
+
+            # Send the converted file
+            return send_file(output_path, as_attachment=True)
+
+    return 'Unsupported file type', 400
+
 def calculate_peaks(channel_data, sample_rate, num_peaks=300):
     # Calculate peaks for visualization in WaveSurfer
     # num_peaks is the fixed number of peaks we want to calculate
@@ -101,4 +146,4 @@ def calculate_peaks(channel_data, sample_rate, num_peaks=300):
         
     return peaks
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=6000)
