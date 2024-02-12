@@ -130,6 +130,45 @@ def convert_image():
 
     return 'Unsupported file type', 400
 
+
+def resize_and_pad(img, desired_dimensions):
+    img_ratio = img.width / img.height
+    closest_fit = min(desired_dimensions, key=lambda x: abs((x[0]/x[1]) - img_ratio))
+    
+    # Resize image to maintain aspect ratio
+    img = img.resize((closest_fit[0], int(closest_fit[0] / img_ratio)), Image.ANTIALIAS)
+    
+    # Create a new image with desired dimensions and paste the resized image
+    new_img = Image.new("RGB", closest_fit, (255, 255, 255))
+    new_img.paste(img, ((closest_fit[0] - img.width) // 2, (closest_fit[1] - img.height) // 2))
+    
+    return new_img
+
+@app.route('/convert-reference', methods=['POST'])
+def convert_reference():
+    data = request.json
+    image_url = data.get('image_url')
+    if not image_url:
+        return jsonify({'error': 'No image URL provided'}), 400
+    
+    try:
+        response = requests.get(image_url)
+        img = Image.open(BytesIO(response.content))
+        desired_dimensions = [
+            (1024, 1024), (1152, 896), (1216, 832), (1344, 768), (1536, 640),
+            (640, 1536), (768, 1344), (832, 1216), (896, 1152)
+        ]
+        converted_img = resize_and_pad(img, desired_dimensions)
+        
+        temp_path = "optimized_reference.png"
+        converted_img.save(temp_path)
+        
+        return send_file(temp_path, as_attachment=True, attachment_filename='optimized_reference.png')
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 def calculate_peaks(channel_data, sample_rate, num_peaks=300):
     # Calculate peaks for visualization in WaveSurfer
     # num_peaks is the fixed number of peaks we want to calculate
