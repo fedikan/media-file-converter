@@ -1,0 +1,8 @@
+Flask
+ffmpeg-python
+numpy
+wavfile
+scipy
+wave
+Pillow
+io
