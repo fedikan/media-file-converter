@@ -8,7 +8,7 @@ RUN apt-get update && \
 
 RUN pip install --upgrade pip
 # Install Python dependencies
-RUN pip install Flask ffmpeg-python numpy wavfile scipy wave Pillow pyheif-pillow-opener
+RUN pip install Flask ffmpeg-python numpy wavfile scipy wave Pillow pillow_heif
 
 # Set the working directory
 WORKDIR /app
