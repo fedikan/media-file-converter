@@ -26,6 +26,7 @@ def calculate_peaks(channel_data, sample_rate, num_peaks=300):
         peaks.append(peak)
         
     return peaks
+
 @app.route('/convert', methods=['POST'])
 def convert_audio():
     # Check if the post request has the file part
@@ -100,6 +101,7 @@ def get_track_meta():
 
         return jsonify({'left_peaks': left_peaks, 'right_peaks': right_peaks, 'duration': duration})
 
+
 @app.route('/convert-image', methods=['POST'])
 def convert_image():
     # Check if the post request has the file part and required parameters
@@ -123,26 +125,31 @@ def convert_image():
         input_path = f'/tmp/{original_filename}'
         file.save(input_path)
 
-        # Open the image file
-        with Image.open(input_path) as img:
-            # If dimensions are provided, resize the image
-            if width > 0 and height > 0:
-                img = img.resize((width, height), Image.Resampling.LANCZOS)
-            
-            output_filename = f'{original_filename}.{output_format}'
-            output_path = f'/tmp/{output_filename}'
+        try:
+            # Open the image file
+            with Image.open(input_path) as img:
+                # If dimensions are provided, resize the image
+                if width > 0 and height > 0:
+                    img = img.resize((width, height), Image.Resampling.LANCZOS)
+                
+                output_filename = f'{original_filename}.{output_format}'
+                output_path = f'/tmp/{output_filename}'
 
-            # Convert and save the image in the specified format with optimization
-            if output_format == 'webp':
-                img.save(output_path, format='WEBP', quality=80, method=6)  # High quality and compression for web
-            else:
-                # For other formats, adjust quality and parameters as needed
-                img.save(output_path, format=output_format.upper())
+                # Convert and save the image in the specified format with optimization
+                if output_format == 'webp':
+                    img.save(output_path, format='WEBP', quality=80, method=6)  # High quality and compression for web
+                else:
+                    # For other formats, adjust quality and parameters as needed
+                    img.save(output_path, format=output_format.upper())
 
-            # Send the converted file
-            return send_file(output_path, as_attachment=True)
+                # Send the converted file
+                return send_file(output_path, as_attachment=True)
+        except IOError:
+            # This block will handle unsupported file types and errors during opening
+            os.remove(input_path)  # Clean up the saved file
+            return 'Unsupported file type or error processing image', 400
 
-    return 'Unsupported file type', 400
+    return 'Unexpected error', 400
 
 def find_closest_dimension(original_width, original_height, allowed_dimensions):
     """
