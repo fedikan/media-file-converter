@@ -139,7 +139,7 @@ def convert_image():
 
                 # Convert and save the image in the specified format with optimization
                 if output_format == 'webp':
-                    img.save(output_path, format='WEBP', quality=80, method=6)  # High quality and compression for web
+                    img.save(output_path, format='WEBP', quality=100, method=6)  # High quality and compression for web
                 else:
                     # For other formats, adjust quality and parameters as needed
                     img.save(output_path, format=output_format.upper())
