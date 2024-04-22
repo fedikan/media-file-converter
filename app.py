@@ -103,7 +103,6 @@ def get_track_meta():
 
         return jsonify({'left_peaks': left_peaks, 'right_peaks': right_peaks, 'duration': duration})
 
-
 @app.route('/convert-image', methods=['POST'])
 def convert_image():
     # Check if the post request has the file part and required parameters
@@ -118,8 +117,9 @@ def convert_image():
     try:
         width = int(request.form.get('width', 0))
         height = int(request.form.get('height', 0))
+        watermark = request.form.get('watermark', None)
     except ValueError:
-        return 'Invalid width or height', 400
+        return 'Invalid parameters', 400
 
     if file:
         # Save the original file
@@ -130,10 +130,40 @@ def convert_image():
         try:
             # Open the image file
             with Image.open(input_path) as img:
-                # If dimensions are provided, resize the image
                 if width > 0 and height > 0:
-                    img = img.resize((width, height), Image.Resampling.LANCZOS)
-                
+                    # Calculate the aspect ratio of the original image
+                    original_aspect_ratio = img.width / img.height
+                    # Calculate the aspect ratio of the desired dimensions
+                    desired_aspect_ratio = width / height
+
+                    if original_aspect_ratio > desired_aspect_ratio:
+                        # Crop the image horizontally
+                        new_width = int(height * original_aspect_ratio)
+                        left = (img.width - new_width) // 2
+                        right = left + new_width
+                        img = img.crop((left, 0, right, img.height))
+                    else:
+                        # Crop the image vertically
+                        new_height = int(width / original_aspect_ratio)
+                        top = (img.height - new_height) // 2
+                        bottom = top + new_height
+                        img = img.crop((0, top, img.width, bottom))
+
+                # Resize the image if dimensions are provided
+                if width > 0 and height > 0:
+                    img = img.resize((width, height), Image.LANCZOS)
+
+                # # Add watermark if provided
+                # if watermark:
+                #     watermark_path = f'/path/to/watermarks/{watermark}'
+                #     with Image.open(watermark_path) as watermark_img:
+                #         # Resize the watermark to fit the image
+                #         watermark_img = watermark_img.resize((img.width // 4, img.height // 4), Image.LANCZOS)
+                #         # Calculate the position to place the watermark (bottom-right corner)
+                #         position = (img.width - watermark_img.width, img.height - watermark_img.height)
+                #         # Paste the watermark onto the image
+                #         img.paste(watermark_img, position, mask=watermark_img)
+
                 output_filename = f'{original_filename}.{output_format}'
                 output_path = f'/tmp/{output_filename}'
 
