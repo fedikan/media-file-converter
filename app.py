@@ -162,9 +162,6 @@ def convert_image():
 
     return 'File processing error', 500
 
-if __name__ == '__main__':
-    app.run(debug=True)
-
 def find_closest_dimension(original_width, original_height, allowed_dimensions):
     """
     Finds the closest dimension from the allowed dimensions based on the closest aspect ratio.
