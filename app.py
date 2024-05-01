@@ -121,7 +121,7 @@ def convert_image():
     except ValueError:
         return 'Invalid parameters', 400
 
-     if file:
+    if file:
         # Save the original file
         original_filename = str(uuid.uuid4())
         input_path = f'/tmp/{original_filename}'
