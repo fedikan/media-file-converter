@@ -150,7 +150,7 @@ def convert_image():
                 bottom = (original_height + new_height) / 2
 
             img = img.crop((left, top, right, bottom))
-            img = img.resize((desired_width, desired_height), Image.ANTIALIAS)
+            img = img.resize((desired_width, desired_height), Image.LANCZOS)
         # Else, proceed without resizing or cropping
 
         # Convert to the desired format
