@@ -115,59 +115,55 @@ def convert_image():
     # Check for output format in the request
     output_format = request.form.get('outputFormat', 'webp').lower()  # Default to webp if not specified
     try:
-        width = int(request.form.get('width', 0))
-        height = int(request.form.get('height', 0))
-        watermark = request.form.get('watermark', None)
+        desired_width = int(request.form.get('width', 0))
+        desired_height = int(request.form.get('height', 0))
+        watermark = request.form.get('watermark', None)  # This example does not implement watermarking
     except ValueError:
         return 'Invalid parameters', 400
 
     if file:
-        # Save the original file
-        original_filename = str(uuid.uuid4())
-        input_path = f'/tmp/{original_filename}'
-        file.save(input_path)
+        # Open the image
+        img = Image.open(file.stream)
 
-        try:
-            # Open the image file
-            with Image.open(input_path) as img:
-                if width > 0 and height > 0:
-                    # Calculate the aspect ratio of the original image
-                    original_aspect_ratio = img.width / img.height
-                    # Calculate the aspect ratio of the desired dimensions
-                    desired_aspect_ratio = width / height
+        # If no desired dimensions are provided, skip resizing and cropping
+        if desired_width > 0 and desired_height > 0:
+            # Calculate the desired aspect ratio
+            desired_aspect_ratio = desired_width / desired_height
+            original_width, original_height = img.size
+            original_aspect_ratio = original_width / original_height
 
-                    if original_aspect_ratio > desired_aspect_ratio:
-                        # Crop the image horizontally
-                        new_width = int(height * original_aspect_ratio)
-                        left = (img.width - new_width) // 2
-                        right = left + new_width
-                        img = img.crop((left, 0, right, img.height))
-                    else:
-                        # Crop the image vertically
-                        new_height = int(width / original_aspect_ratio)
-                        top = (img.height - new_height) // 2
-                        bottom = top + new_height
-                        img = img.crop((0, top, img.width, bottom))
+            if original_aspect_ratio > desired_aspect_ratio:
+                # The image is wider than the desired aspect ratio, so crop the sides
+                new_height = original_height
+                new_width = int(desired_aspect_ratio * new_height)
+                left = (original_width - new_width) / 2
+                top = 0
+                right = (original_width + new_width) / 2
+                bottom = original_height
+            else:
+                # The image is taller than the desired aspect ratio, so crop the top and bottom
+                new_width = original_width
+                new_height = int(new_width / desired_aspect_ratio)
+                left = 0
+                top = (original_height - new_height) / 2
+                right = original_width
+                bottom = (original_height + new_height) / 2
 
+            img = img.crop((left, top, right, bottom))
+            img = img.resize((desired_width, desired_height), Image.ANTIALIAS)
+        # Else, proceed without resizing or cropping
 
-                output_filename = f'{original_filename}.{output_format}'
-                output_path = f'/tmp/{output_filename}'
+        # Convert to the desired format
+        img_io = io.BytesIO()
+        img.save(img_io, format=output_format.upper(), quality=95)  # Adjust quality as needed
+        img_io.seek(0)
 
-                # Convert and save the image in the specified format with optimization
-                if output_format == 'webp':
-                    img.save(output_path, format='WEBP', quality=100, method=6)  # High quality and compression for web
-                else:
-                    # For other formats, adjust quality and parameters as needed
-                    img.save(output_path, format=output_format.upper())
+        return send_file(img_io, mimetype=f'image/{output_format}')
 
-                # Send the converted file
-                return send_file(output_path, as_attachment=True)
-        except IOError:
-            # This block will handle unsupported file types and errors during opening
-            os.remove(input_path)  # Clean up the saved file
-            return 'Unsupported file type or error processing image', 400
+    return 'File processing error', 500
 
-    return 'Unexpected error', 400
+if __name__ == '__main__':
+    app.run(debug=True)
 
 def find_closest_dimension(original_width, original_height, allowed_dimensions):
     """
