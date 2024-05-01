@@ -121,7 +121,7 @@ def convert_image():
     except ValueError:
         return 'Invalid parameters', 400
 
-    if file:
+     if file:
         # Save the original file
         original_filename = str(uuid.uuid4())
         input_path = f'/tmp/{original_filename}'
@@ -149,20 +149,6 @@ def convert_image():
                         bottom = top + new_height
                         img = img.crop((0, top, img.width, bottom))
 
-                # Resize the image if dimensions are provided
-                if width > 0 and height > 0:
-                    img = img.resize((width, height), Image.LANCZOS)
-
-                # # Add watermark if provided
-                # if watermark:
-                #     watermark_path = f'/path/to/watermarks/{watermark}'
-                #     with Image.open(watermark_path) as watermark_img:
-                #         # Resize the watermark to fit the image
-                #         watermark_img = watermark_img.resize((img.width // 4, img.height // 4), Image.LANCZOS)
-                #         # Calculate the position to place the watermark (bottom-right corner)
-                #         position = (img.width - watermark_img.width, img.height - watermark_img.height)
-                #         # Paste the watermark onto the image
-                #         img.paste(watermark_img, position, mask=watermark_img)
 
                 output_filename = f'{original_filename}.{output_format}'
                 output_path = f'/tmp/{output_filename}'
