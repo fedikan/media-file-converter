@@ -212,12 +212,12 @@ def transform_image():
         return 'Missing file or dimensions', 400
     file = request.files['file']
     dimensions_str = request.form['dimensions']
-    output_format = request.form.get('outputFormat', 'webp').lower()  # Default to webp if not specified
+    output_format = request.form.get('output_format', 'webp').lower()  # Default to webp if not specified
     
     if file.filename == '':
         return 'No selected file', 400
 
-    # Parse dimensions from the request
+    # Parse dimensions from the requestfileType
     allowed_dimensions = parse_dimensions(dimensions_str)
     if not allowed_dimensions:
         return 'Invalid dimensions format', 400
@@ -231,7 +231,7 @@ def transform_image():
     # Resize and crop the image to exactly match the closest dimension
     img_transformed = resize_and_crop(img, *closest_dimension)
 
-    output = io.BytesIO()
+    output = io.ByfileTypetesIO()
     img_format = img.format if img.format is not None else 'JPEG'  # Default to JPEG if format is not detected
     img_transformed.save(output, format=output_format)
     output.seek(0)
