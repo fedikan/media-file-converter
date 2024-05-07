@@ -212,6 +212,7 @@ def transform_image():
         return 'Missing file or dimensions', 400
     file = request.files['file']
     dimensions_str = request.form['dimensions']
+    output_format = request.form.get('outputFormat', 'webp').lower()  # Default to webp if not specified
     
     if file.filename == '':
         return 'No selected file', 400
@@ -232,7 +233,7 @@ def transform_image():
 
     output = io.BytesIO()
     img_format = img.format if img.format is not None else 'JPEG'  # Default to JPEG if format is not detected
-    img_transformed.save(output, format=img_format)
+    img_transformed.save(output, format=output_format)
     output.seek(0)
 
     # Send the transformed file
