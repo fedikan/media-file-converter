@@ -37,39 +37,28 @@ def add_watermark():
 
     image_file = request.files['file']
     
-    # Open the main image
     main_image = Image.open(image_file).convert("RGBA")
 
-    # Open the watermark image (assuming it's stored in the same directory)
     watermark = Image.open('aiphoria-watermark.png').convert("RGBA")
 
-    # Resize watermark if needed
     watermark.thumbnail((100, 100))  # Adjust size as needed
 
-    # Calculate position (bottom right corner)
     position = (main_image.width - watermark.width, main_image.height - watermark.height)
 
-    # Create a new image with an alpha channel
     watermarked = Image.new('RGBA', main_image.size)
 
-    # Paste the main image
     watermarked.paste(main_image, (0, 0))
 
-    # Paste the watermark
     watermarked.paste(watermark, position, mask=watermark)
 
-    # Convert to 'RGB' to remove alpha for saving as PNG
     watermarked = watermarked.convert("RGB")
 
-    # Save the result to a bytes buffer
     img_io = io.BytesIO()
     watermarked.save(img_io, 'PNG')
     img_io.seek(0)
 
-    return send_file(img_io, mimetype='image/png')
+    return send_file(img_io, as_attachment=True, mimetype='image/png')
 
-if __name__ == '__main__':
-    app.run(debug=True)
 @app.route('/convert', methods=['POST'])
 def convert_audio():
     # Check if the post request has the file part
