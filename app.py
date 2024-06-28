@@ -34,7 +34,6 @@ def add_watermark():
     if 'file' not in request.files:
         return 'No file part', 400
 
-
     image_file = request.files['file']
     
     main_image = Image.open(image_file).convert("RGBA")
@@ -58,7 +57,12 @@ def add_watermark():
 
     img_io.seek(0)
 
-    return send_file(img_io, as_attachment=True)
+    return send_file(
+        img_io,
+        mimetype='image/webp',
+        as_attachment=True,
+        download_name='watermarked_image.webp'
+    )
 
 @app.route('/convert', methods=['POST'])
 def convert_audio():
