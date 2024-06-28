@@ -58,7 +58,7 @@ def add_watermark():
 
     img_io.seek(0)
 
-    return send_file(img_io, as_attachment=True, mimetype='image/webp')
+    return send_file(img_io, as_attachment=True)
 
 @app.route('/convert', methods=['POST'])
 def convert_audio():
