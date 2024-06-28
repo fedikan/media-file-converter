@@ -40,7 +40,12 @@ def add_watermark():
 
     watermark = Image.open('aiphoria-watermark.png').convert("RGBA")
 
-    watermark.thumbnail((100, 100))  # Adjust size as needed
+    # Calculate new watermark size (20% of image height)
+    new_height = int(main_image.height * 0.2)
+    aspect_ratio = watermark.width / watermark.height
+    new_width = int(new_height * aspect_ratio)
+
+    watermark = watermark.resize((new_width, new_height), Image.LANCZOS)
 
     position = (main_image.width - watermark.width, main_image.height - watermark.height)
 
