@@ -15,6 +15,7 @@ WORKDIR /app
 
 # Copy the Python script into the container
 COPY app.py /app/
+COPY aiphoria-watermark.png /app/
 
 # Expose the port the app runs on
 EXPOSE 5000
