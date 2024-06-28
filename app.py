@@ -54,10 +54,11 @@ def add_watermark():
     watermarked = watermarked.convert("RGB")
 
     img_io = io.BytesIO()
-    watermarked.save(img_io, 'PNG')
+    watermarked.save(img_io, 'WEBP', quality=95)  # Adjust quality as needed
+
     img_io.seek(0)
 
-    return send_file(img_io, as_attachment=True, mimetype='image/png')
+    return send_file(img_io, as_attachment=True, mimetype='image/webp')
 
 @app.route('/convert', methods=['POST'])
 def convert_audio():
