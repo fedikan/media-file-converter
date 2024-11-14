@@ -47,7 +47,7 @@ def add_watermark():
 
     watermark = watermark.resize((new_width, new_height), Image.LANCZOS)
 
-    position = (main_image.width - watermark.width, main_image.height - watermark.height)
+    position = (0, main_image.height - watermark.height)
 
     watermarked = Image.new('RGBA', main_image.size)
 
