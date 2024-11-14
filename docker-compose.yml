@@ -10,11 +10,10 @@ services:
     ports:
       - 5000:5000
     networks:
-      - aiphoria_network
-      - aiphoria_network_dev
+      
+      - ropewalk_network
 networks:
-  aiphoria_network_dev:
-    external: true 
-  aiphoria_network:
+  ropewalk_network:
     external: true
+ 
     
