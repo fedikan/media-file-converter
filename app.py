@@ -41,7 +41,7 @@ def add_watermark():
     watermark = Image.open('ropewalk-watermark.png').convert("RGBA")
 
     # Calculate new watermark size (20% of image height)
-    new_height = int(main_image.width * 0.2)
+    new_height = int(main_image.width * 0.15)
     aspect_ratio = watermark.width / watermark.height
     new_width = int(new_height * aspect_ratio)
 
