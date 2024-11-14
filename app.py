@@ -35,12 +35,21 @@ def add_watermark():
         return 'No file part', 400
 
     image_file = request.files['file']
-    
     main_image = Image.open(image_file).convert("RGBA")
+    
+    # Crop to square if image is vertical
+    width, height = main_image.size
+    if height > width:
+        # Calculate the crop box for center square
+        crop_size = width
+        top = (height - width) // 2
+        bottom = top + crop_size
+        crop_box = (0, top, width, bottom)
+        main_image = main_image.crop(crop_box)
 
     watermark = Image.open('ropewalk-watermark.png').convert("RGBA")
 
-    # Calculate new watermark size (20% of image height)
+    # Calculate new watermark size (15% of image width)
     new_height = int(main_image.width * 0.15)
     aspect_ratio = watermark.width / watermark.height
     new_width = int(new_height * aspect_ratio)
