@@ -38,7 +38,7 @@ def add_watermark():
     
     main_image = Image.open(image_file).convert("RGBA")
 
-    watermark = Image.open('aiphoria-watermark.png').convert("RGBA")
+    watermark = Image.open('ropewalk-watermark.png').convert("RGBA")
 
     # Calculate new watermark size (20% of image height)
     new_height = int(main_image.height * 0.2)
