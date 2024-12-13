@@ -9,6 +9,7 @@ import io
 import wave
 from PIL import Image
 from pillow_heif import register_heif_opener
+import cv2
 register_heif_opener()
 
 app = Flask(__name__)
@@ -301,6 +302,55 @@ def parse_dimensions(dimensions_str):
             continue  # Skip invalid formats
     return dimensions
 
+@app.route('/extract-first-frame', methods=['POST'])
+def extract_first_frame():
+    if 'file' not in request.files:
+        return 'No file part', 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return 'No selected file', 400
+
+    # Save the uploaded video file temporarily
+    temp_video_path = f'/tmp/{str(uuid.uuid4())}.mp4'
+    file.save(temp_video_path)
+
+    try:
+        # Open the video file
+        cap = cv2.VideoCapture(temp_video_path)
+        
+        # Read the first frame
+        ret, frame = cap.read()
+        if not ret:
+            return 'Could not extract frame from video', 400
+
+        # Convert BGR to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Convert to PIL Image
+        img = Image.fromarray(frame_rgb)
+        
+        # Save to bytes buffer
+        img_io = io.BytesIO()
+        img.save(img_io, 'WEBP', quality=95)
+        img_io.seek(0)
+
+        # Clean up
+        cap.release()
+        os.remove(temp_video_path)
+
+        return send_file(
+            img_io,
+            mimetype='image/webp',
+            as_attachment=True,
+            download_name='first_frame.webp'
+        )
+
+    except Exception as e:
+        # Clean up in case of error
+        if os.path.exists(temp_video_path):
+            os.remove(temp_video_path)
+        return f'Error processing video: {str(e)}', 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

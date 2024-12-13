@@ -6,3 +6,4 @@ scipy
 wave
 Pillow
 io
+opencv-python
