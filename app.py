@@ -352,5 +352,134 @@ def extract_first_frame():
             os.remove(temp_video_path)
         return f'Error processing video: {str(e)}', 500
 
+
+@app.route('/extract-last-frame', methods=['POST'])
+def extract_last_frame():
+    if 'file' not in request.files:
+        return 'No file part', 400
+    file = request.files['file']
+    if file.filename == '':
+        return 'No selected file', 400
+
+    temp_video_path = f'/tmp/{str(uuid.uuid4())}.mp4'
+    file.save(temp_video_path)
+    cap = None
+    try:
+        cap = cv2.VideoCapture(temp_video_path)
+        if not cap.isOpened():
+            return 'Could not open video', 400
+
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame = None
+
+        # Try to jump to the last frame
+        if frame_count and frame_count > 1:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 1)
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                # Fallback: step from a few frames before the end
+                start = max(0, frame_count - 5)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+                last = None
+                while True:
+                    ret, f = cap.read()
+                    if not ret:
+                        break
+                    last = f
+                frame = last
+        else:
+            # Unknown frame count, iterate to the end
+            last = None
+            while True:
+                ret, f = cap.read()
+                if not ret:
+                    break
+                last = f
+            frame = last
+
+        if frame is None:
+            return 'Could not extract last frame from video', 400
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(frame_rgb)
+        img_io = io.BytesIO()
+        img.save(img_io, 'WEBP', quality=95)
+        img_io.seek(0)
+
+        return send_file(
+            img_io,
+            mimetype='image/webp',
+            as_attachment=True,
+            download_name='last_frame.webp'
+        )
+    except Exception as e:
+        return f'Error processing video: {str(e)}', 500
+    finally:
+        try:
+            if cap is not None:
+                cap.release()
+        except Exception:
+            pass
+        if os.path.exists(temp_video_path):
+            try:
+                os.remove(temp_video_path)
+            except Exception:
+                pass
+
+
+@app.route('/concat', methods=['POST'])
+def concat_videos():
+    if 'file1' not in request.files or 'file2' not in request.files:
+        return 'Missing files', 400
+
+    f1 = request.files['file1']
+    f2 = request.files['file2']
+    if f1.filename == '' or f2.filename == '':
+        return 'No selected file', 400
+
+    in1 = f"/tmp/{uuid.uuid4()}.mp4"
+    in2 = f"/tmp/{uuid.uuid4()}.mp4"
+    out = f"/tmp/{uuid.uuid4()}.mp4"
+
+    try:
+        f1.save(in1)
+        f2.save(in2)
+
+        # Try concat with both video and audio, with re-encode for robustness
+        try:
+            i1 = ffmpeg.input(in1)
+            i2 = ffmpeg.input(in2)
+            v1 = i1.video
+            a1 = i1.audio
+            v2 = i2.video
+            a2 = i2.audio
+            vcat, acat = ffmpeg.concat(v1, a1, v2, a2, v=1, a=1).node()
+            stream = ffmpeg.output(
+                vcat, acat, out, vcodec='libx264', acodec='aac', movflags='faststart'
+            )
+            ffmpeg.run(stream, overwrite_output=True)
+        except Exception:
+            # Fallback: concat video only
+            i1 = ffmpeg.input(in1)
+            i2 = ffmpeg.input(in2)
+            v1 = i1.video
+            v2 = i2.video
+            vcat = ffmpeg.concat(v1, v2, v=1, a=0).node()[0]
+            stream = ffmpeg.output(
+                vcat, out, vcodec='libx264', movflags='faststart'
+            )
+            ffmpeg.run(stream, overwrite_output=True)
+
+        return send_file(out, mimetype='video/mp4', as_attachment=True, download_name='concat.mp4')
+    except Exception as e:
+        return f'Error concatenating videos: {str(e)}', 500
+    finally:
+        for p in [in1, in2, out]:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
