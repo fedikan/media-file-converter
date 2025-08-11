@@ -833,4 +833,15 @@ def analyze_video():
             pass
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Only run the development server if explicitly requested
+    import os
+    debug_mode = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    
+    if debug_mode:
+        print("Running in development mode - Use FLASK_DEBUG=true only for development!")
+        app.run(debug=True, host='0.0.0.0', port=5000)
+    else:
+        print("Production mode detected. Use a WSGI server like Gunicorn.")
+        print("Example: gunicorn --bind 0.0.0.0:5000 app:app")
+        # Don't run the development server in production
+        exit(1)
