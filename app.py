@@ -445,25 +445,36 @@ def concat_videos():
         f1.save(in1)
         f2.save(in2)
 
-        # Try concat with both video and audio, with re-encode for robustness
-        try:
-            i1 = ffmpeg.input(in1)
-            i2 = ffmpeg.input(in2)
-            v1 = i1.video
+        def has_audio(path):
+            # Use ffprobe to check if the file has an audio stream
+            try:
+                probe = ffmpeg.probe(path)
+                streams = probe.get('streams', [])
+                for s in streams:
+                    if s.get('codec_type') == 'audio':
+                        return True
+                return False
+            except Exception:
+                return False
+
+        audio1 = has_audio(in1)
+        audio2 = has_audio(in2)
+
+        i1 = ffmpeg.input(in1)
+        i2 = ffmpeg.input(in2)
+        v1 = i1.video
+        v2 = i2.video
+
+        if audio1 and audio2:
             a1 = i1.audio
-            v2 = i2.video
             a2 = i2.audio
             vcat, acat = ffmpeg.concat(v1, a1, v2, a2, v=1, a=1).node()
             stream = ffmpeg.output(
                 vcat, acat, out, vcodec='libx264', acodec='aac', movflags='faststart'
             )
             ffmpeg.run(stream, overwrite_output=True)
-        except Exception:
-            # Fallback: concat video only
-            i1 = ffmpeg.input(in1)
-            i2 = ffmpeg.input(in2)
-            v1 = i1.video
-            v2 = i2.video
+        else:
+            # If either video has no audio, concat video only
             vcat = ffmpeg.concat(v1, v2, v=1, a=0).node()[0]
             stream = ffmpeg.output(
                 vcat, out, vcodec='libx264', movflags='faststart'
