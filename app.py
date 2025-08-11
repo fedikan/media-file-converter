@@ -494,7 +494,55 @@ def concat_videos():
                     # Fallback to software encoding
                     return 'libx264'
 
-        def normalize_video(input_path, output_path, target_info):
+        def get_optimal_specs(info1, info2):
+            """Determine optimal video specifications for concatenation"""
+            # Get resolutions
+            res1 = (info1['video'].get('width', 1920), info1['video'].get('height', 1080))
+            res2 = (info2['video'].get('width', 1920), info2['video'].get('height', 1080))
+            
+            # Use the lower resolution to avoid upscaling
+            target_width = min(res1[0], res2[0])
+            target_height = min(res1[1], res2[1])
+            
+            # Ensure dimensions are even (required for H.264)
+            target_width = target_width - (target_width % 2)
+            target_height = target_height - (target_height % 2)
+            
+            # Cap resolution to prevent H.264 level issues
+            max_pixels = 1920 * 1080  # 1080p max
+            current_pixels = target_width * target_height
+            if current_pixels > max_pixels:
+                ratio = (max_pixels / current_pixels) ** 0.5
+                target_width = int(target_width * ratio) - (int(target_width * ratio) % 2)
+                target_height = int(target_height * ratio) - (int(target_height * ratio) % 2)
+            
+            # Get frame rates and cap to reasonable maximum
+            def parse_fps(fps_str):
+                try:
+                    if '/' in str(fps_str):
+                        num, den = map(float, str(fps_str).split('/'))
+                        return num / den if den != 0 else 30.0
+                    return float(fps_str)
+                except:
+                    return 30.0
+            
+            fps1 = parse_fps(info1['video'].get('r_frame_rate', '30/1'))
+            fps2 = parse_fps(info2['video'].get('r_frame_rate', '30/1'))
+            
+            # Use the lower fps to avoid issues, but cap at 60fps
+            target_fps = min(max(fps1, fps2), 60.0)
+            
+            # Check audio compatibility
+            has_audio = info1['audio'] is not None and info2['audio'] is not None
+            
+            return {
+                'width': target_width,
+                'height': target_height,
+                'fps': target_fps,
+                'has_audio': has_audio
+            }
+
+        def normalize_video(input_path, output_path, target_specs):
             """Normalize video to consistent format for concatenation"""
             try:
                 input_stream = ffmpeg.input(input_path)
@@ -502,19 +550,42 @@ def concat_videos():
                 # Use hardware-accelerated encoding if available
                 vcodec = detect_hardware_acceleration()
                 
-                # Normalize to common settings
+                # Calculate bitrate based on resolution and fps to stay within H.264 limits
+                pixels_per_second = target_specs['width'] * target_specs['height'] * target_specs['fps']
+                
+                # Conservative bitrate calculation to avoid level limits
+                if pixels_per_second > 1920 * 1080 * 30:
+                    video_bitrate = '8M'  # High resolution/fps
+                elif pixels_per_second > 1280 * 720 * 30:
+                    video_bitrate = '5M'  # 720p
+                else:
+                    video_bitrate = '3M'  # Lower resolution
+                
+                # Normalize to common settings with H.264 level constraints
                 video_args = {
                     'vcodec': vcodec,
                     'pix_fmt': 'yuv420p',
-                    'preset': 'fast' if vcodec == 'libx264' else None,
-                    'crf': 23 if vcodec == 'libx264' else None,
-                    'movflags': 'faststart'
+                    's': f"{target_specs['width']}x{target_specs['height']}",
+                    'r': target_specs['fps'],
+                    'movflags': 'faststart',
+                    'video_bitrate': video_bitrate,
                 }
                 
-                # Remove None values
-                video_args = {k: v for k, v in video_args.items() if v is not None}
+                # Add codec-specific settings
+                if vcodec == 'libx264':
+                    video_args.update({
+                        'preset': 'medium',
+                        'level': '4.1',  # Ensures compatibility with most devices
+                        'maxrate': video_bitrate,
+                        'bufsize': f"{int(video_bitrate[:-1]) * 2}M"  # 2x bitrate for buffer
+                    })
+                elif vcodec in ['h264_nvenc', 'h264_qsv']:
+                    video_args.update({
+                        'preset': 'medium',
+                        'level': '4.1'
+                    })
                 
-                if target_info['audio']:
+                if target_specs['has_audio']:
                     # Include audio normalization
                     audio_args = {
                         'acodec': 'aac',
@@ -535,13 +606,45 @@ def concat_videos():
         info1 = get_video_info(in1)
         info2 = get_video_info(in2)
         
-        # Determine target format (use the higher quality/resolution as reference)
-        has_audio = info1['audio'] is not None and info2['audio'] is not None
+        # Validate video specs and warn about potential issues
+        def validate_video_specs(info):
+            issues = []
+            fps_str = info['video'].get('r_frame_rate', '30/1')
+            
+            def parse_fps(fps_str):
+                try:
+                    if '/' in str(fps_str):
+                        num, den = map(float, str(fps_str).split('/'))
+                        return num / den if den != 0 else 30.0
+                    return float(fps_str)
+                except:
+                    return 30.0
+            
+            fps = parse_fps(fps_str)
+            width = int(info['video'].get('width', 0))
+            height = int(info['video'].get('height', 0))
+            
+            if fps > 120:
+                issues.append(f"Extremely high frame rate ({fps:.1f} fps) detected")
+            if width * height > 4096 * 2160:  # 4K
+                issues.append(f"Ultra-high resolution ({width}x{height}) may cause issues")
+            
+            return issues
+        
+        validation_issues = []
+        validation_issues.extend(validate_video_specs(info1))
+        validation_issues.extend(validate_video_specs(info2))
+        
+        # Log validation issues but continue processing with normalization
+        if validation_issues:
+            print(f"Video validation warnings: {validation_issues}")
+        
+        # Determine optimal specifications
+        target_specs = get_optimal_specs(info1, info2)
         
         # Normalize both videos to ensure compatibility
-        target_info = {'audio': has_audio}
-        normalize_video(in1, normalized1, target_info)
-        normalize_video(in2, normalized2, target_info)
+        normalize_video(in1, normalized1, target_specs)
+        normalize_video(in2, normalized2, target_specs)
 
         # Optimized concatenation using normalized inputs
         input1 = ffmpeg.input(normalized1)
@@ -550,18 +653,40 @@ def concat_videos():
         # Detect best encoder for final output
         vcodec = detect_hardware_acceleration()
         
-        # Configure optimal encoding settings
+        # Calculate appropriate bitrate for final output
+        pixels_per_second = target_specs['width'] * target_specs['height'] * target_specs['fps']
+        
+        if pixels_per_second > 1920 * 1080 * 30:
+            final_bitrate = '10M'  # High quality for high resolution
+        elif pixels_per_second > 1280 * 720 * 30:
+            final_bitrate = '6M'   # 720p quality
+        else:
+            final_bitrate = '4M'   # Standard quality
+        
+        # Configure optimal encoding settings with H.264 constraints
         encode_args = {
             'vcodec': vcodec,
             'movflags': 'faststart',
-            'preset': 'fast' if vcodec == 'libx264' else None,
-            'crf': 20 if vcodec == 'libx264' else None,  # Higher quality for final output
+            'video_bitrate': final_bitrate,
         }
         
-        # Remove None values
-        encode_args = {k: v for k, v in encode_args.items() if v is not None}
+        # Add codec-specific settings for final output
+        if vcodec == 'libx264':
+            encode_args.update({
+                'preset': 'slow',      # Better quality for final output
+                'level': '4.1',        # H.264 level constraint
+                'maxrate': final_bitrate,
+                'bufsize': f"{int(final_bitrate[:-1]) * 2}M",
+                'profile': 'high'      # Better compression
+            })
+        elif vcodec in ['h264_nvenc', 'h264_qsv']:
+            encode_args.update({
+                'preset': 'slow',
+                'level': '4.1',
+                'profile': 'high'
+            })
 
-        if has_audio:
+        if target_specs['has_audio']:
             # Concatenate both video and audio
             v1, a1 = input1.video, input1.audio
             v2, a2 = input2.video, input2.audio
@@ -596,6 +721,116 @@ def concat_videos():
                     os.remove(temp_file)
             except Exception:
                 pass
+
+@app.route('/analyze-video', methods=['POST'])
+def analyze_video():
+    """Analyze video file and return comprehensive information"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    temp_path = f"/tmp/{uuid.uuid4()}.mp4"
+    
+    try:
+        file.save(temp_path)
+        
+        # Get detailed video information
+        probe = ffmpeg.probe(temp_path)
+        
+        video_stream = None
+        audio_stream = None
+        
+        for stream in probe.get('streams', []):
+            if stream.get('codec_type') == 'video' and not video_stream:
+                video_stream = stream
+            elif stream.get('codec_type') == 'audio' and not audio_stream:
+                audio_stream = stream
+        
+        if not video_stream:
+            return jsonify({'error': 'No video stream found'}), 400
+        
+        # Parse frame rate
+        def parse_fps(fps_str):
+            try:
+                if '/' in str(fps_str):
+                    num, den = map(float, str(fps_str).split('/'))
+                    return num / den if den != 0 else 30.0
+                return float(fps_str)
+            except:
+                return 30.0
+        
+        fps = parse_fps(video_stream.get('r_frame_rate', '30/1'))
+        width = int(video_stream.get('width', 0))
+        height = int(video_stream.get('height', 0))
+        duration = float(probe.get('format', {}).get('duration', 0))
+        
+        # Calculate specs and potential issues
+        pixels_per_second = width * height * fps
+        total_pixels = width * height
+        
+        # Check for potential issues
+        issues = []
+        warnings = []
+        
+        if fps > 60:
+            issues.append(f"Very high frame rate ({fps:.1f} fps) may cause encoding issues")
+        elif fps > 30:
+            warnings.append(f"High frame rate ({fps:.1f} fps) detected")
+        
+        if total_pixels > 1920 * 1080:
+            issues.append(f"Resolution ({width}x{height}) exceeds 1080p, may be downscaled")
+        
+        if pixels_per_second > 1920 * 1080 * 60:
+            issues.append("Video complexity may exceed H.264 level limits")
+        
+        # Determine recommended settings
+        recommended_fps = min(fps, 60.0)
+        recommended_width = min(width, 1920)
+        recommended_height = min(height, 1080)
+        
+        # Ensure even dimensions
+        recommended_width = recommended_width - (recommended_width % 2)
+        recommended_height = recommended_height - (recommended_height % 2)
+        
+        response_data = {
+            'original_specs': {
+                'width': width,
+                'height': height,
+                'fps': round(fps, 2),
+                'duration': round(duration, 2),
+                'codec': video_stream.get('codec_name'),
+                'bitrate': video_stream.get('bit_rate'),
+                'has_audio': audio_stream is not None,
+                'audio_codec': audio_stream.get('codec_name') if audio_stream else None
+            },
+            'recommended_specs': {
+                'width': recommended_width,
+                'height': recommended_height,
+                'fps': recommended_fps,
+                'max_bitrate': '10M' if pixels_per_second > 1920 * 1080 * 30 else '6M'
+            },
+            'analysis': {
+                'pixels_per_second': int(pixels_per_second),
+                'h264_level_compatible': pixels_per_second <= 1920 * 1080 * 60,
+                'issues': issues,
+                'warnings': warnings,
+                'concatenation_ready': len(issues) == 0
+            }
+        }
+        
+        return jsonify(response_data)
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to analyze video: {str(e)}'}), 500
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
