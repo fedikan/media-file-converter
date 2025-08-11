@@ -468,14 +468,14 @@ def concat_videos():
         if audio1 and audio2:
             a1 = i1.audio
             a2 = i2.audio
-            vcat, acat = ffmpeg.concat(v1, a1, v2, a2, v=1, a=1).node()
+            vcat, acat = ffmpeg.concat(v1, a1, v2, a2, v=1, a=1).node
             stream = ffmpeg.output(
                 vcat, acat, out, vcodec='libx264', acodec='aac', movflags='faststart'
             )
             ffmpeg.run(stream, overwrite_output=True)
         else:
             # If either video has no audio, concat video only
-            vcat = ffmpeg.concat(v1, v2, v=1, a=0).node()[0]
+            vcat = ffmpeg.concat(v1, v2, v=1, a=0).node[0]
             stream = ffmpeg.output(
                 vcat, out, vcodec='libx264', movflags='faststart'
             )
