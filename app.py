@@ -437,58 +437,163 @@ def concat_videos():
     if f1.filename == '' or f2.filename == '':
         return 'No selected file', 400
 
-    in1 = f"/tmp/{uuid.uuid4()}.mp4"
-    in2 = f"/tmp/{uuid.uuid4()}.mp4"
-    out = f"/tmp/{uuid.uuid4()}.mp4"
+    # Generate unique filenames
+    temp_id = str(uuid.uuid4())
+    in1 = f"/tmp/{temp_id}_1.mp4"
+    in2 = f"/tmp/{temp_id}_2.mp4"
+    normalized1 = f"/tmp/{temp_id}_norm1.mp4"
+    normalized2 = f"/tmp/{temp_id}_norm2.mp4"
+    out = f"/tmp/{temp_id}_output.mp4"
+    
+    temp_files = [in1, in2, normalized1, normalized2, out]
 
     try:
+        # Save uploaded files
         f1.save(in1)
         f2.save(in2)
 
-        def has_audio(path):
-            # Use ffprobe to check if the file has an audio stream
+        def get_video_info(path):
+            """Get comprehensive video information including codecs, resolution, fps"""
             try:
                 probe = ffmpeg.probe(path)
-                streams = probe.get('streams', [])
-                for s in streams:
-                    if s.get('codec_type') == 'audio':
-                        return True
-                return False
-            except Exception:
-                return False
+                video_stream = None
+                audio_stream = None
+                
+                for stream in probe.get('streams', []):
+                    if stream.get('codec_type') == 'video' and not video_stream:
+                        video_stream = stream
+                    elif stream.get('codec_type') == 'audio' and not audio_stream:
+                        audio_stream = stream
+                
+                return {
+                    'video': video_stream,
+                    'audio': audio_stream,
+                    'duration': float(probe.get('format', {}).get('duration', 0))
+                }
+            except Exception as e:
+                raise Exception(f"Failed to probe video {path}: {str(e)}")
 
-        audio1 = has_audio(in1)
-        audio2 = has_audio(in2)
-
-        i1 = ffmpeg.input(in1)
-        i2 = ffmpeg.input(in2)
-        v1 = i1.video
-        v2 = i2.video
-
-        if audio1 and audio2:
-            a1 = i1.audio
-            a2 = i2.audio
-            vcat, acat = ffmpeg.concat(v1, a1, v2, a2, v=1, a=1).node
-            stream = ffmpeg.output(
-                vcat, acat, out, vcodec='libx264', acodec='aac', movflags='faststart'
-            )
-            ffmpeg.run(stream, overwrite_output=True)
-        else:
-            # If either video has no audio, concat video only
-            vcat = ffmpeg.concat(v1, v2, v=1, a=0).node[0]
-            stream = ffmpeg.output(
-                vcat, out, vcodec='libx264', movflags='faststart'
-            )
-            ffmpeg.run(stream, overwrite_output=True)
-
-        return send_file(out, mimetype='video/mp4', as_attachment=True, download_name='concat.mp4')
-    except Exception as e:
-        return f'Error concatenating videos: {str(e)}', 500
-    finally:
-        for p in [in1, in2, out]:
+        def detect_hardware_acceleration():
+            """Detect available hardware acceleration"""
             try:
-                if os.path.exists(p):
-                    os.remove(p)
+                # Check for NVIDIA GPU support
+                ffmpeg.run(ffmpeg.input('color=c=black:s=64x64:d=0.1', f='lavfi')
+                          .output('/tmp/test_nvenc.mp4', vcodec='h264_nvenc', t=0.1, loglevel='quiet'), 
+                          overwrite_output=True)
+                os.remove('/tmp/test_nvenc.mp4')
+                return 'h264_nvenc'
+            except:
+                try:
+                    # Check for Intel Quick Sync
+                    ffmpeg.run(ffmpeg.input('color=c=black:s=64x64:d=0.1', f='lavfi')
+                              .output('/tmp/test_qsv.mp4', vcodec='h264_qsv', t=0.1, loglevel='quiet'), 
+                              overwrite_output=True)
+                    os.remove('/tmp/test_qsv.mp4')
+                    return 'h264_qsv'
+                except:
+                    # Fallback to software encoding
+                    return 'libx264'
+
+        def normalize_video(input_path, output_path, target_info):
+            """Normalize video to consistent format for concatenation"""
+            try:
+                input_stream = ffmpeg.input(input_path)
+                
+                # Use hardware-accelerated encoding if available
+                vcodec = detect_hardware_acceleration()
+                
+                # Normalize to common settings
+                video_args = {
+                    'vcodec': vcodec,
+                    'pix_fmt': 'yuv420p',
+                    'preset': 'fast' if vcodec == 'libx264' else None,
+                    'crf': 23 if vcodec == 'libx264' else None,
+                    'movflags': 'faststart'
+                }
+                
+                # Remove None values
+                video_args = {k: v for k, v in video_args.items() if v is not None}
+                
+                if target_info['audio']:
+                    # Include audio normalization
+                    audio_args = {
+                        'acodec': 'aac',
+                        'audio_bitrate': '128k',
+                        'ar': 44100
+                    }
+                    stream = ffmpeg.output(input_stream, output_path, **video_args, **audio_args)
+                else:
+                    # Video only
+                    stream = ffmpeg.output(input_stream.video, output_path, **video_args)
+                
+                ffmpeg.run(stream, overwrite_output=True, quiet=True)
+                
+            except Exception as e:
+                raise Exception(f"Failed to normalize video {input_path}: {str(e)}")
+
+        # Get video information
+        info1 = get_video_info(in1)
+        info2 = get_video_info(in2)
+        
+        # Determine target format (use the higher quality/resolution as reference)
+        has_audio = info1['audio'] is not None and info2['audio'] is not None
+        
+        # Normalize both videos to ensure compatibility
+        target_info = {'audio': has_audio}
+        normalize_video(in1, normalized1, target_info)
+        normalize_video(in2, normalized2, target_info)
+
+        # Optimized concatenation using normalized inputs
+        input1 = ffmpeg.input(normalized1)
+        input2 = ffmpeg.input(normalized2)
+        
+        # Detect best encoder for final output
+        vcodec = detect_hardware_acceleration()
+        
+        # Configure optimal encoding settings
+        encode_args = {
+            'vcodec': vcodec,
+            'movflags': 'faststart',
+            'preset': 'fast' if vcodec == 'libx264' else None,
+            'crf': 20 if vcodec == 'libx264' else None,  # Higher quality for final output
+        }
+        
+        # Remove None values
+        encode_args = {k: v for k, v in encode_args.items() if v is not None}
+
+        if has_audio:
+            # Concatenate both video and audio
+            v1, a1 = input1.video, input1.audio
+            v2, a2 = input2.video, input2.audio
+            
+            joined_video, joined_audio = ffmpeg.concat(v1, a1, v2, a2, v=1, a=1).node
+            
+            stream = ffmpeg.output(
+                joined_video, joined_audio, out,
+                acodec='aac',
+                audio_bitrate='192k',  # Higher quality audio
+                **encode_args
+            )
+        else:
+            # Video only concatenation
+            v1, v2 = input1.video, input2.video
+            joined_video = ffmpeg.concat(v1, v2, v=1, a=0).node[0]
+            
+            stream = ffmpeg.output(joined_video, out, **encode_args)
+
+        # Run with progress monitoring
+        ffmpeg.run(stream, overwrite_output=True)
+
+        return send_file(out, mimetype='video/mp4', as_attachment=True, download_name='concatenated.mp4')
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to concatenate videos: {str(e)}'}), 500
+    finally:
+        # Clean up all temporary files
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
             except Exception:
                 pass
 
