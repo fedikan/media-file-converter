@@ -315,6 +315,25 @@ def ensure_dirs():
     """Ensure necessary directories exist"""
     os.makedirs(CONFIG['temp_dir'], exist_ok=True)
 
+def validate_ffmpeg():
+    """Validate that ffmpeg is working properly"""
+    try:
+        # Test ffmpeg availability by running a simple command
+        import subprocess
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            print("FFmpeg validation successful")
+            return True
+        else:
+            print(f"FFmpeg validation failed with return code: {result.returncode}")
+            return False
+    except FileNotFoundError:
+        print("FFmpeg not found in PATH")
+        return False
+    except Exception as e:
+        print(f"FFmpeg validation failed: {e}")
+        return False
+
 def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
     """
     Download a remote file if URL is provided, otherwise return the local path.
@@ -323,8 +342,17 @@ def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
     if url_or_path.startswith(('http://', 'https://')):
         # Download remote file
         try:
-            response = requests.get(url_or_path, stream=True, timeout=30)
+            print(f"Starting download of {file_type} from: {url_or_path}")
+            response = requests.get(url_or_path, stream=True, timeout=60)
             response.raise_for_status()
+
+            # Check content length
+            content_length = response.headers.get('content-length')
+            if content_length:
+                content_length = int(content_length)
+                if content_length < 1000:
+                    raise Exception(f"Remote file is too small ({content_length} bytes)")
+                print(f"Expected file size: {content_length} bytes")
 
             # Determine file extension from content-type or URL
             content_type = response.headers.get('content-type', '')
@@ -341,16 +369,39 @@ def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
             temp_filename = f"{file_type}_{uuid.uuid4()}{ext}"
             temp_path = os.path.join(temp_dir, temp_filename)
 
+            downloaded_size = 0
             with open(temp_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
 
+            # Verify download was successful
+            if content_length and downloaded_size != content_length:
+                raise Exception(f"Download incomplete: expected {content_length} bytes, got {downloaded_size} bytes")
+
+            if downloaded_size < 1000:
+                raise Exception(f"Downloaded file is too small ({downloaded_size} bytes)")
+
+            print(f"Successfully downloaded {file_type}: {temp_path} ({downloaded_size} bytes)")
             return temp_path
 
+        except requests.exceptions.Timeout:
+            raise Exception(f"Download timeout for {file_type} from {url_or_path}")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Network error downloading {file_type} from {url_or_path}: {str(e)}")
         except Exception as e:
             raise Exception(f"Failed to download {file_type} from {url_or_path}: {str(e)}")
     else:
-        # Local file path
+        # Local file path - validate it exists
+        if not os.path.exists(url_or_path):
+            raise Exception(f"Local {file_type} file does not exist: {url_or_path}")
+
+        file_size = os.path.getsize(url_or_path)
+        if file_size < 1000:
+            raise Exception(f"Local {file_type} file is too small ({file_size} bytes): {url_or_path}")
+
+        print(f"Using local {file_type} file: {url_or_path} ({file_size} bytes)")
         return url_or_path
 
 def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0):
@@ -358,6 +409,23 @@ def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0):
     Merge audio with video using ffmpeg, with optional audio delay.
     """
     try:
+        # Validate input files exist and are readable
+        if not os.path.exists(video_path):
+            raise Exception(f"Video file does not exist: {video_path}")
+        if not os.path.exists(audio_path):
+            raise Exception(f"Audio file does not exist: {audio_path}")
+
+        # Check file sizes to ensure they're not empty
+        video_size = os.path.getsize(video_path)
+        audio_size = os.path.getsize(audio_path)
+
+        if video_size < 100:
+            raise Exception(f"Video file is too small or empty: {video_size} bytes")
+        if audio_size < 100:
+            raise Exception(f"Audio file is too small or empty: {audio_size} bytes")
+
+        print(f"Merging video ({video_size} bytes) with audio ({audio_size} bytes)")
+
         video_input = ffmpeg.input(video_path)
         audio_input = ffmpeg.input(audio_path)
 
@@ -378,8 +446,27 @@ def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0):
             movflags='faststart'
         )
 
-        ffmpeg.run(output, overwrite_output=True, quiet=True)
+        # Run ffmpeg without quiet mode to see any errors
+        ffmpeg.run(output, overwrite_output=True)
 
+        # Verify the output file was created and has content
+        if not os.path.exists(output_path):
+            raise Exception(f"FFmpeg failed to create output file: {output_path}")
+
+        output_size = os.path.getsize(output_path)
+        if output_size < 1000:
+            raise Exception(f"Output file is too small ({output_size} bytes), likely corrupted")
+
+        print(f"Successfully created merged video: {output_path} ({output_size} bytes)")
+
+    except ffmpeg.Error as e:
+        # Handle FFmpeg specific errors
+        error_msg = "FFmpeg error"
+        if hasattr(e, 'stderr') and e.stderr:
+            error_msg += f": {e.stderr.decode('utf-8', errors='ignore')}"
+        elif str(e):
+            error_msg += f": {str(e)}"
+        raise Exception(f"Failed to merge audio with video: {error_msg}")
     except Exception as e:
         raise Exception(f"Failed to merge audio with video: {str(e)}")
 
@@ -455,16 +542,38 @@ def merge_audio_with_video_endpoint():
             return jsonify({'error': 'audioUrl is required'}), 400
 
         ensure_dirs()
+
+        # Validate ffmpeg availability
+        if not validate_ffmpeg():
+            return jsonify({'error': 'FFmpeg is not available or not working properly'}), 500
+
         temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
 
         # Resolve local paths (supports remote URLs)
+        print(f"Downloading video from: {video_url}")
         local_video_path = download_remote_file_if_needed(video_url, temp_dir, 'video')
+        print(f"Downloading audio from: {audio_url}")
         local_audio_path = download_remote_file_if_needed(audio_url, temp_dir, 'audio')
 
         if not local_video_path or not os.path.exists(local_video_path):
             return jsonify({'error': 'Video file not found after resolution'}), 404
         if not local_audio_path or not os.path.exists(local_audio_path):
             return jsonify({'error': 'Audio file not found after resolution'}), 404
+
+        # Validate downloaded files
+        try:
+            video_size = os.path.getsize(local_video_path)
+            audio_size = os.path.getsize(local_audio_path)
+            print(f"Downloaded video size: {video_size} bytes")
+            print(f"Downloaded audio size: {audio_size} bytes")
+
+            if video_size < 1000:
+                return jsonify({'error': f'Video file is too small ({video_size} bytes)'}), 400
+            if audio_size < 1000:
+                return jsonify({'error': f'Audio file is too small ({audio_size} bytes)'}), 400
+
+        except OSError as e:
+            return jsonify({'error': f'Error validating downloaded files: {str(e)}'}), 500
 
         # Prepare output filename
         timestamp = int(time.time())
@@ -474,17 +583,33 @@ def merge_audio_with_video_endpoint():
         # Combine (replace video audio with provided audio track)
         add_audio_to_video(local_video_path, local_audio_path, temp_output_path, audio_delay_ms)
 
-        if not os.path.exists(temp_output_path) or os.path.getsize(temp_output_path) < 1000:
-            raise Exception("Output video file is missing or too small")
+        # Double-check the output file exists and is valid (prevent race condition)
+        if not os.path.exists(temp_output_path):
+            return jsonify({'error': 'Failed to create merged video file'}), 500
+
+        try:
+            output_size = os.path.getsize(temp_output_path)
+            if output_size < 1000:
+                return jsonify({'error': f'Merged video file is too small ({output_size} bytes)'}), 500
+            print(f"Merged video file size: {output_size} bytes")
+        except OSError as e:
+            return jsonify({'error': f'Error validating merged video file: {str(e)}'}), 500
 
         def generate():
             try:
+                # Check file exists right before opening to prevent race condition
+                if not os.path.exists(temp_output_path):
+                    raise Exception("Output file was deleted before streaming could begin")
+
                 with open(temp_output_path, 'rb') as video_file:
                     while True:
                         chunk = video_file.read(8192)
                         if not chunk:
                             break
                         yield chunk
+            except Exception as stream_error:
+                print(f"Error during streaming: {stream_error}")
+                raise
             finally:
                 try:
                     if os.path.exists(temp_output_path):
@@ -518,6 +643,28 @@ def merge_audio_with_video_endpoint():
             except Exception as cleanup_error:
                 print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
 
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint to verify the service is running properly"""
+    try:
+        # Check if ffmpeg is available
+        ffmpeg_available = validate_ffmpeg()
+
+        # Check if temp directory is writable
+        temp_dir_writable = os.access(CONFIG['temp_dir'], os.W_OK)
+
+        return jsonify({
+            'status': 'healthy' if ffmpeg_available and temp_dir_writable else 'unhealthy',
+            'ffmpeg_available': ffmpeg_available,
+            'temp_dir_writable': temp_dir_writable,
+            'temp_dir': CONFIG['temp_dir']
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 @app.route('/extract-last-frame', methods=['POST'])
 def extract_last_frame():
@@ -1002,12 +1149,17 @@ if __name__ == '__main__':
     # Only run the development server if explicitly requested
     import os
     debug_mode = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
-    
+
     if debug_mode:
         print("Running in development mode - Use FLASK_DEBUG=true only for development!")
         app.run(debug=True, host='0.0.0.0', port=5000)
     else:
         print("Production mode detected. Use a WSGI server like Gunicorn.")
         print("Example: gunicorn --bind 0.0.0.0:5000 app:app")
-        # Don't run the development server in production
-        exit(1)
+        print("For Docker deployment, the app will be served by gunicorn automatically.")
+        # In Docker/containerized environments, don't exit - let the WSGI server handle it
+        if os.getenv('DOCKER_CONTAINER', '').lower() in ('true', '1', 'yes'):
+            print("Running in Docker container - app object is available for WSGI server")
+        else:
+            print("Not running in Docker - exiting. Use gunicorn for production deployment.")
+            exit(1)
