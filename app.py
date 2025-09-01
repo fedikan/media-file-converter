@@ -615,12 +615,8 @@ def merge_audio_with_video_endpoint():
                     if os.path.exists(temp_output_path):
                         os.unlink(temp_output_path)
                         print(f"Cleaned up temp file: {temp_output_path}")
-                    # Also clean up the entire temp directory after streaming is complete
-                    if temp_dir and os.path.exists(temp_dir):
-                        shutil.rmtree(temp_dir)
-                        print(f"Cleaned up temp directory: {temp_dir}")
                 except Exception as cleanup_error:
-                    print(f"Failed to clean up temp resources: {cleanup_error}")
+                    print(f"Failed to clean up temp file: {cleanup_error}")
 
         response = app.response_class(
             generate(),
@@ -641,9 +637,122 @@ def merge_audio_with_video_endpoint():
                 pass
         return jsonify({'error': str(e)}), 500
     finally:
-        # Note: temp_dir cleanup is now handled in the generate() function
-        # to prevent race condition with streaming
-        pass
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as cleanup_error:
+                print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
+
+
+@app.route('/video-duration', methods=['POST'])
+def get_video_duration():
+    """Get video duration from a video URL"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+
+        video_url = data.get('url')
+        if not video_url:
+            return jsonify({'error': 'videoUrl is required'}), 400
+
+        ensure_dirs()
+
+        # Validate ffmpeg availability
+        if not validate_ffmpeg():
+            return jsonify({'error': 'FFmpeg is not available or not working properly'}), 500
+
+        temp_dir = None
+        try:
+            temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+
+            # Download or resolve the video file
+            print(f"Processing video from: {video_url}")
+            local_video_path = download_remote_file_if_needed(video_url, temp_dir, 'video')
+
+            if not local_video_path or not os.path.exists(local_video_path):
+                return jsonify({'error': 'Video file not found after resolution'}), 404
+
+            # Validate downloaded file
+            file_size = os.path.getsize(local_video_path)
+            if file_size < 1000:
+                return jsonify({'error': f'Video file is too small ({file_size} bytes)'}), 400
+
+            print(f"Video file size: {file_size} bytes")
+
+            # Probe video to get duration
+            probe = ffmpeg.probe(local_video_path)
+
+            # Find video stream
+            video_stream = None
+            for stream in probe.get('streams', []):
+                if stream.get('codec_type') == 'video':
+                    video_stream = stream
+                    break
+
+            if not video_stream:
+                return jsonify({'error': 'No video stream found in the file'}), 400
+
+            # Get duration from format info (more reliable)
+            format_info = probe.get('format', {})
+            duration = float(format_info.get('duration', 0))
+
+            # Fallback to stream duration if format duration is not available
+            if duration == 0 and video_stream.get('duration'):
+                duration = float(video_stream.get('duration', 0))
+
+            if duration == 0:
+                return jsonify({'error': 'Could not determine video duration'}), 400
+
+            # Get additional video information
+            width = int(video_stream.get('width', 0))
+            height = int(video_stream.get('height', 0))
+
+            def parse_fps(fps_str):
+                try:
+                    if '/' in str(fps_str):
+                        num, den = map(float, str(fps_str).split('/'))
+                        return num / den if den != 0 else 30.0
+                    return float(fps_str)
+                except:
+                    return 30.0
+
+            fps = parse_fps(video_stream.get('r_frame_rate', '30/1'))
+            codec = video_stream.get('codec_name', 'unknown')
+
+            return jsonify({
+                'duration': round(duration, 2),
+                'duration_formatted': format_duration(duration),
+                'width': width,
+                'height': height,
+                'fps': round(fps, 2),
+                'codec': codec,
+                'file_size': file_size
+            })
+
+        except Exception as e:
+            return jsonify({'error': f'Failed to process video: {str(e)}'}), 500
+        finally:
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception as cleanup_error:
+                    print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
+
+    except Exception as e:
+        return jsonify({'error': f'Failed to get video duration: {str(e)}'}), 500
+
+
+def format_duration(seconds):
+    """Format duration in seconds to HH:MM:SS format"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    else:
+        return f"{minutes:02d}:{secs:02d}"
 
 
 @app.route('/health', methods=['GET'])
