@@ -526,6 +526,7 @@ def merge_audio_with_video_endpoint():
     """Merge provided audio with a video and return the merged video stream."""
     temp_dir = None
     temp_output_path = None
+    will_stream = False
     try:
         data = request.get_json()
         if not data:
@@ -617,6 +618,13 @@ def merge_audio_with_video_endpoint():
                         print(f"Cleaned up temp file: {temp_output_path}")
                 except Exception as cleanup_error:
                     print(f"Failed to clean up temp file: {cleanup_error}")
+                # Also remove the temp directory now that streaming is complete
+                try:
+                    if temp_dir and os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+                        print(f"Cleaned up temp directory: {temp_dir}")
+                except Exception as cleanup_error:
+                    print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
 
         response = app.response_class(
             generate(),
@@ -627,6 +635,7 @@ def merge_audio_with_video_endpoint():
                 'X-Filename': output_filename
             }
         )
+        will_stream = True
         return response
     except Exception as e:
         print(f"Error in merge_audio_with_video_endpoint: {e}")
@@ -637,7 +646,8 @@ def merge_audio_with_video_endpoint():
                 pass
         return jsonify({'error': str(e)}), 500
     finally:
-        if temp_dir and os.path.exists(temp_dir):
+        # If we returned a streaming response, defer cleanup to the generator's finally
+        if temp_dir and os.path.exists(temp_dir) and not will_stream:
             try:
                 shutil.rmtree(temp_dir)
             except Exception as cleanup_error:
