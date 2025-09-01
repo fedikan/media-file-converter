@@ -615,8 +615,12 @@ def merge_audio_with_video_endpoint():
                     if os.path.exists(temp_output_path):
                         os.unlink(temp_output_path)
                         print(f"Cleaned up temp file: {temp_output_path}")
+                    # Also clean up the entire temp directory after streaming is complete
+                    if temp_dir and os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+                        print(f"Cleaned up temp directory: {temp_dir}")
                 except Exception as cleanup_error:
-                    print(f"Failed to clean up temp file: {cleanup_error}")
+                    print(f"Failed to clean up temp resources: {cleanup_error}")
 
         response = app.response_class(
             generate(),
@@ -637,11 +641,9 @@ def merge_audio_with_video_endpoint():
                 pass
         return jsonify({'error': str(e)}), 500
     finally:
-        if temp_dir and os.path.exists(temp_dir):
-            try:
-                shutil.rmtree(temp_dir)
-            except Exception as cleanup_error:
-                print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
+        # Note: temp_dir cleanup is now handled in the generate() function
+        # to prevent race condition with streaming
+        pass
 
 
 @app.route('/health', methods=['GET'])
