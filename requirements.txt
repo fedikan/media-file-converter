@@ -6,3 +6,4 @@ Pillow==10.0.0
 pillow-heif==0.13.0
 opencv-python==4.8.0.76
 gunicorn==21.2.0
+requests==2.31.0
