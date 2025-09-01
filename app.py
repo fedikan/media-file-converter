@@ -10,9 +10,18 @@ import wave
 from PIL import Image
 from pillow_heif import register_heif_opener
 import cv2
+import tempfile
+import shutil
+import time
+import requests
 register_heif_opener()
 
 app = Flask(__name__)
+
+# Configuration for temp directory
+CONFIG = {
+    'temp_dir': '/tmp'
+}
 
 def calculate_peaks(channel_data, sample_rate, num_peaks=300):
     # Calculate peaks for visualization in WaveSurfer
@@ -302,6 +311,78 @@ def parse_dimensions(dimensions_str):
             continue  # Skip invalid formats
     return dimensions
 
+def ensure_dirs():
+    """Ensure necessary directories exist"""
+    os.makedirs(CONFIG['temp_dir'], exist_ok=True)
+
+def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
+    """
+    Download a remote file if URL is provided, otherwise return the local path.
+    Returns the local path to the file.
+    """
+    if url_or_path.startswith(('http://', 'https://')):
+        # Download remote file
+        try:
+            response = requests.get(url_or_path, stream=True, timeout=30)
+            response.raise_for_status()
+
+            # Determine file extension from content-type or URL
+            content_type = response.headers.get('content-type', '')
+            if 'video' in content_type:
+                ext = '.mp4'
+            elif 'audio' in content_type:
+                ext = '.mp3'
+            else:
+                # Extract extension from URL
+                from urllib.parse import urlparse
+                parsed_url = urlparse(url_or_path)
+                ext = os.path.splitext(parsed_url.path)[1] or '.mp4'
+
+            temp_filename = f"{file_type}_{uuid.uuid4()}{ext}"
+            temp_path = os.path.join(temp_dir, temp_filename)
+
+            with open(temp_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            return temp_path
+
+        except Exception as e:
+            raise Exception(f"Failed to download {file_type} from {url_or_path}: {str(e)}")
+    else:
+        # Local file path
+        return url_or_path
+
+def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0):
+    """
+    Merge audio with video using ffmpeg, with optional audio delay.
+    """
+    try:
+        video_input = ffmpeg.input(video_path)
+        audio_input = ffmpeg.input(audio_path)
+
+        # Apply audio delay if specified
+        if audio_delay_ms != 0:
+            delay_seconds = audio_delay_ms / 1000.0
+            audio_input = audio_input.filter('adelay', f"{delay_seconds}s|{delay_seconds}s")
+
+        # Combine video and audio
+        output = ffmpeg.output(
+            video_input.video,
+            audio_input.audio,
+            output_path,
+            vcodec='libx264',
+            acodec='aac',
+            audio_bitrate='128k',
+            video_bitrate='2M',
+            movflags='faststart'
+        )
+
+        ffmpeg.run(output, overwrite_output=True, quiet=True)
+
+    except Exception as e:
+        raise Exception(f"Failed to merge audio with video: {str(e)}")
+
 @app.route('/extract-first-frame', methods=['POST'])
 def extract_first_frame():
     if 'file' not in request.files:
@@ -351,6 +432,91 @@ def extract_first_frame():
         if os.path.exists(temp_video_path):
             os.remove(temp_video_path)
         return f'Error processing video: {str(e)}', 500
+
+
+@app.route('/merge-audio', methods=['POST'])
+def merge_audio_with_video_endpoint():
+    """Merge provided audio with a video and return the merged video stream."""
+    temp_dir = None
+    temp_output_path = None
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+
+        video_url = data.get('videoUrl')
+        audio_url = data.get('audioUrl')
+        options = data.get('options', {}) or {}
+        audio_delay_ms = int(options.get('audioDelayMs', 0) or 0)
+
+        if not video_url:
+            return jsonify({'error': 'videoUrl is required'}), 400
+        if not audio_url:
+            return jsonify({'error': 'audioUrl is required'}), 400
+
+        ensure_dirs()
+        temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+
+        # Resolve local paths (supports remote URLs)
+        local_video_path = download_remote_file_if_needed(video_url, temp_dir, 'video')
+        local_audio_path = download_remote_file_if_needed(audio_url, temp_dir, 'audio')
+
+        if not local_video_path or not os.path.exists(local_video_path):
+            return jsonify({'error': 'Video file not found after resolution'}), 404
+        if not local_audio_path or not os.path.exists(local_audio_path):
+            return jsonify({'error': 'Audio file not found after resolution'}), 404
+
+        # Prepare output filename
+        timestamp = int(time.time())
+        output_filename = f"merged_with_audio_{timestamp}.mp4"
+        temp_output_path = os.path.join(temp_dir, output_filename)
+
+        # Combine (replace video audio with provided audio track)
+        add_audio_to_video(local_video_path, local_audio_path, temp_output_path, audio_delay_ms)
+
+        if not os.path.exists(temp_output_path) or os.path.getsize(temp_output_path) < 1000:
+            raise Exception("Output video file is missing or too small")
+
+        def generate():
+            try:
+                with open(temp_output_path, 'rb') as video_file:
+                    while True:
+                        chunk = video_file.read(8192)
+                        if not chunk:
+                            break
+                        yield chunk
+            finally:
+                try:
+                    if os.path.exists(temp_output_path):
+                        os.unlink(temp_output_path)
+                        print(f"Cleaned up temp file: {temp_output_path}")
+                except Exception as cleanup_error:
+                    print(f"Failed to clean up temp file: {cleanup_error}")
+
+        response = app.response_class(
+            generate(),
+            mimetype='video/mp4',
+            headers={
+                'Content-Disposition': f'attachment; filename="{output_filename}"',
+                'Content-Type': 'video/mp4',
+                'X-Filename': output_filename
+            }
+        )
+        return response
+    except Exception as e:
+        print(f"Error in merge_audio_with_video_endpoint: {e}")
+        if temp_output_path and os.path.exists(temp_output_path):
+            try:
+                os.unlink(temp_output_path)
+            except Exception:
+                pass
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as cleanup_error:
+                print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
 
 
 @app.route('/extract-last-frame', methods=['POST'])
