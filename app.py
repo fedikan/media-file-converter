@@ -1266,6 +1266,96 @@ def analyze_video():
         except Exception:
             pass
 
+@app.route('/downscale-image', methods=['POST'])
+def downscale_image():
+    """Downscale an image to fit within max dimensions while maintaining aspect ratio."""
+    temp_dir = None
+    try:
+        # Determine input source: file upload or JSON body with imageUrl
+        if 'file' in request.files and request.files['file'].filename != '':
+            uploaded_file = request.files['file']
+            max_width = int(request.form.get('maxWidth', 2048))
+            max_height = int(request.form.get('maxHeight', 2048))
+            quality = int(request.form.get('quality', 90))
+            output_format = request.form.get('outputFormat', 'webp').lower()
+            img = Image.open(uploaded_file.stream)
+        else:
+            data = request.get_json()
+            if not data or not data.get('imageUrl'):
+                return jsonify({'error': 'Either a file upload or imageUrl is required'}), 400
+
+            image_url = data['imageUrl']
+            max_width = int(data.get('maxWidth', 2048))
+            max_height = int(data.get('maxHeight', 2048))
+            quality = int(data.get('quality', 90))
+            output_format = data.get('outputFormat', 'webp').lower()
+
+            ensure_dirs()
+            temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+
+            # Download the image
+            print(f"Downloading image from: {image_url}")
+            response = requests.get(image_url, stream=True, timeout=60)
+            response.raise_for_status()
+
+            from urllib.parse import urlparse
+            parsed_url = urlparse(image_url)
+            ext = os.path.splitext(parsed_url.path)[1] or '.jpg'
+            temp_path = os.path.join(temp_dir, f"image_{uuid.uuid4()}{ext}")
+
+            with open(temp_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            img = Image.open(temp_path)
+
+        if output_format not in ('webp', 'png', 'jpeg', 'jpg'):
+            return jsonify({'error': f'Unsupported output format: {output_format}'}), 400
+        if output_format == 'jpg':
+            output_format = 'jpeg'
+
+        # Convert RGBA to RGB for JPEG output
+        if output_format == 'jpeg' and img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+
+        original_width, original_height = img.size
+
+        # Downscale if needed
+        if original_width > max_width or original_height > max_height:
+            img.thumbnail((max_width, max_height), Image.LANCZOS)
+
+        new_width, new_height = img.size
+
+        # Save to buffer
+        img_io = io.BytesIO()
+        save_kwargs = {'format': output_format.upper()}
+        if output_format in ('jpeg', 'webp'):
+            save_kwargs['quality'] = quality
+        img.save(img_io, **save_kwargs)
+        img_io.seek(0)
+
+        mimetype = f'image/{output_format}'
+        if output_format == 'jpeg':
+            mimetype = 'image/jpeg'
+
+        resp = send_file(img_io, mimetype=mimetype)
+        resp.headers['X-Original-Width'] = str(original_width)
+        resp.headers['X-Original-Height'] = str(original_height)
+        resp.headers['X-New-Width'] = str(new_width)
+        resp.headers['X-New-Height'] = str(new_height)
+        return resp
+
+    except Exception as e:
+        return jsonify({'error': f'Failed to downscale image: {str(e)}'}), 500
+    finally:
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
+
+
 if __name__ == '__main__':
     # Only run the development server if explicitly requested
     import os
