@@ -768,6 +768,40 @@ def format_duration(seconds):
         return f"{minutes:02d}:{secs:02d}"
 
 
+@app.route('/compose-og-card', methods=['POST'])
+def compose_og_card():
+    """Render a branded 1200x630 OG share card for a generation.
+
+    Body JSON:
+      {
+        "template": "generation",
+        "data": {
+          "background_url": "<url of the generation image>",
+          "prompt": "...",
+          "username": "alice",
+          "model_label": "Flux Pro",
+          "is_agent_run": false
+        }
+      }
+    Returns: image/webp bytes.
+    """
+    try:
+        from og.compose import compose_card
+        payload = request.get_json(silent=True) or {}
+        webp_bytes = compose_card(payload)
+        return send_file(
+            io.BytesIO(webp_bytes),
+            mimetype='image/webp',
+            as_attachment=False,
+            download_name='og-card.webp',
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        app.logger.exception('compose-og-card failed')
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint to verify the service is running properly"""
