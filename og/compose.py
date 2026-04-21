@@ -289,6 +289,142 @@ def render_model_card(data: dict) -> bytes:
     return out.getvalue()
 
 
+def render_canvas_card(data: dict) -> bytes:
+    """
+    Branded card for a canvas page (/canvas/:id).
+
+    Layout:
+      - Brand gradient + faint grid background
+      - Top-left "CANVAS" chip
+      - Canvas preview (previewUrl) letterboxed into a rounded hero on the right
+      - Bottom-left: canvas name + metadata line (node count, age, author)
+      - Bottom-right: ropewalk wordmark
+
+    Required fields in `data`:
+      - name: str (canvas.name, falls back to "Untitled canvas")
+    Optional:
+      - preview_url: str (captured VueFlow preview — real canvas contents)
+      - description: str
+      - owner_username: str
+      - node_count: int
+      - updated_ago: str (e.g. "2d ago", prepared server-side)
+    """
+    name = (data.get("name") or "").strip() or "Untitled canvas"
+    preview_url = (data.get("preview_url") or "").strip()
+    description = (data.get("description") or "").strip()
+    owner_username = (data.get("owner_username") or "").strip()
+    node_count = data.get("node_count")
+    updated_ago = (data.get("updated_ago") or "").strip()
+
+    canvas = c.vertical_gradient(CARD_W, CARD_H, c.BG_TOP, c.BG_BOTTOM).convert("RGBA")
+
+    # Faint grid for the "infinite canvas" feel
+    grid = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(grid)
+    for x in range(0, CARD_W, 60):
+        gdraw.line([(x, 0), (x, CARD_H)], fill=(14, 22, 22, 140), width=1)
+    for y in range(0, CARD_H, 60):
+        gdraw.line([(0, y), (CARD_W, y)], fill=(14, 22, 22, 140), width=1)
+    canvas = Image.alpha_composite(canvas, grid)
+
+    draw = ImageDraw.Draw(canvas)
+
+    # Layout: left text column (420w) + right hero (680w)
+    LEFT_X = 56
+    LEFT_W = 440
+    HERO_X = 520
+    HERO_W = CARD_W - HERO_X - 56  # = 624
+    HERO_H = int(HERO_W * 9 / 16)   # 16:9 = 351
+    HERO_Y = (CARD_H - HERO_H) // 2
+
+    # Hero: canvas preview inside a rounded frame
+    hero_img = _fetch_image(preview_url) if preview_url else None
+    # frame (always drawn; panel behind preview OR as the placeholder itself)
+    frame = Image.new("RGBA", (HERO_W + 12, HERO_H + 12), (0, 0, 0, 0))
+    fdraw = ImageDraw.Draw(frame)
+    fdraw.rounded_rectangle(
+        (0, 0, frame.width, frame.height),
+        radius=26, fill=c.NODE_FILL + (255,),
+        outline=c.NODE_STROKE + (255,), width=2,
+    )
+    canvas.paste(frame, (HERO_X - 6, HERO_Y - 6), frame)
+    if hero_img is not None:
+        hero_cover = c.resize_cover(hero_img, HERO_W, HERO_H)
+        hero_rounded = c.round_corners(hero_cover, 20)
+        canvas.paste(hero_rounded, (HERO_X, HERO_Y), hero_rounded)
+    else:
+        # Placeholder: faint node-diagram motif hinting that the canvas is empty
+        pdraw = ImageDraw.Draw(canvas)
+        nodes = [
+            (HERO_X + 60, HERO_Y + 90, HERO_X + 220, HERO_Y + 150),
+            (HERO_X + 280, HERO_Y + 70, HERO_X + 440, HERO_Y + 130),
+            (HERO_X + 280, HERO_Y + 200, HERO_X + 440, HERO_Y + 260),
+            (HERO_X + 490, HERO_Y + 140, HERO_X + 580, HERO_Y + 200),
+        ]
+        for n in nodes:
+            pdraw.rounded_rectangle(n, radius=12, outline=c.NODE_STROKE, width=2)
+
+    # Left column — text block, vertically centered against the hero
+    # Measure the block first
+    CHIP_H = 44
+    CHIP_TO_NAME = 22
+    NAME_FONT = c.get_font(52, "bold")
+    NAME_LINE_H = 60
+    NAME_TO_DESC = 12
+    DESC_FONT = c.get_font(22, "regular")
+    DESC_LINE_H = 30
+    DESC_TO_META = 22
+    META_H = 28
+
+    name_lines = c.clamp_lines(c.wrap_text(draw, name, NAME_FONT, LEFT_W), 2)
+    desc_lines = c.clamp_lines(c.wrap_text(draw, description, DESC_FONT, LEFT_W), 2) \
+        if description else []
+
+    meta_bits = []
+    if isinstance(node_count, int) and node_count >= 0:
+        meta_bits.append(f"{node_count} node{'s' if node_count != 1 else ''}")
+    if owner_username:
+        meta_bits.append(f"@{owner_username}")
+    if updated_ago:
+        meta_bits.append(updated_ago)
+    meta_line = "  ·  ".join(meta_bits)
+
+    total_h = CHIP_H + CHIP_TO_NAME + NAME_LINE_H * len(name_lines)
+    if desc_lines:
+        total_h += NAME_TO_DESC + DESC_LINE_H * len(desc_lines)
+    if meta_line:
+        total_h += DESC_TO_META + META_H
+
+    hero_center_y = HERO_Y + HERO_H // 2
+    y = hero_center_y - total_h // 2
+
+    # Draw chip
+    _draw_chip(canvas, LEFT_X, y, "CANVAS", dot_color=c.ACCENT, font_size=20, weight="bold")
+    y += CHIP_H + CHIP_TO_NAME
+    # Name
+    for line in name_lines:
+        draw.text((LEFT_X, y), line, fill=c.TEXT_PRIMARY, font=NAME_FONT)
+        y += NAME_LINE_H
+    # Description
+    if desc_lines:
+        y += NAME_TO_DESC
+        for line in desc_lines:
+            draw.text((LEFT_X, y), line, fill=c.TEXT_SECONDARY, font=DESC_FONT)
+            y += DESC_LINE_H
+    # Meta line (nodes · @user · updated)
+    if meta_line:
+        y += DESC_TO_META
+        meta_font = c.get_font(20, "semibold")
+        draw.text((LEFT_X, y), meta_line, fill=c.TEXT_SECONDARY, font=meta_font)
+
+    final = canvas.convert("RGB")
+    c.paste_wordmark(final, right_pad=40, bottom_pad=32)
+
+    out = io.BytesIO()
+    final.save(out, "WEBP", quality=82, method=6)
+    return out.getvalue()
+
+
 def compose_card(data: dict) -> bytes:
     template = (data or {}).get("template") or ""
     payload = (data or {}).get("data") or {}
@@ -296,4 +432,6 @@ def compose_card(data: dict) -> bytes:
         return render_generation_card(payload)
     if template == "model":
         return render_model_card(payload)
+    if template == "canvas":
+        return render_canvas_card(payload)
     raise ValueError(f"Unknown OG card template: {template!r}")
