@@ -28,6 +28,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the application files
 COPY app.py /app/
 COPY ropewalk-watermark.png /app/
+COPY og/ /app/og/
 # Note: Add watermark file (ropewalk-watermark.png) if needed for watermark functionality
 
 # Create a non-root user for security

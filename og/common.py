@@ -11,6 +11,7 @@ FONT_REGULAR = os.path.join(FONTS_DIR, "PublicSans-Regular.ttf")
 FONT_SEMIBOLD = os.path.join(FONTS_DIR, "PublicSans-SemiBold.ttf")
 FONT_BOLD = os.path.join(FONTS_DIR, "PublicSans-Bold.ttf")
 LOGO_PNG = os.path.join(ASSETS_DIR, "LOGO_512.png")
+LOGO_TEXT_PNG = os.path.join(ASSETS_DIR, "LOGO_TEXT.png")
 
 # Brand palette from ropewalk-front/app/assets/styles/colors.scss (dark mode).
 BG_TOP = (10, 13, 13)          # --tertiary-background
@@ -130,22 +131,76 @@ def load_logo(target_height: int, tint=None) -> Image.Image:
     return logo
 
 
+def _tint_rgba(src: Image.Image, tint) -> Image.Image:
+    """Re-color every non-transparent pixel of an RGBA image to `tint`,
+    preserving the original alpha channel. Used to brand-tint monochrome
+    logo assets to the accent color."""
+    src = src.convert("RGBA")
+    r, g, b = tint
+    out = src.copy()
+    pixels = out.load()
+    for y in range(out.height):
+        for x in range(out.width):
+            _, _, _, a = pixels[x, y]
+            if a > 0:
+                pixels[x, y] = (r, g, b, a)
+    return out
+
+
+def load_wordmark(target_height: int, tint=None) -> Image.Image:
+    """Load the 'ropewalk' wordmark PNG, scaled to target_height and
+    optionally tinted. Returns None if the asset is missing."""
+    if not os.path.exists(LOGO_TEXT_PNG):
+        return None
+    wm = Image.open(LOGO_TEXT_PNG).convert("RGBA")
+    ratio = target_height / wm.height
+    new_w = int(wm.width * ratio)
+    wm = wm.resize((new_w, target_height), Image.LANCZOS)
+    if tint is not None:
+        wm = _tint_rgba(wm, tint)
+    return wm
+
+
 def paste_wordmark(img: Image.Image, right_pad: int = 48, bottom_pad: int = 40):
-    """Bottom-right 'ropewalk' wordmark with the real logo (teal-tinted)."""
-    draw = ImageDraw.Draw(img)
-    wm_font = get_font(30, "semibold")
-    wm_text = "ropewalk"
-    bbox = draw.textbbox((0, 0), wm_text, font=wm_font)
-    wm_w = bbox[2] - bbox[0]
-    logo_h = 40
-    logo = load_logo(logo_h, tint=ACCENT)
+    """Bottom-right ropewalk lockup: icon + wordmark, both teal-tinted.
+    Prefers the real wordmark PNG; falls back to Public Sans text if missing."""
+    icon_h = 42
+    wm_h = 34
     gap = 12
-    if logo is not None:
-        total_w = logo.width + gap + wm_w
-        x_start = img.width - total_w - right_pad
-        y_center = img.height - bottom_pad - logo_h
-        img.paste(logo, (x_start, y_center), logo)
-        text_y = y_center + (logo_h - 30) // 2 - 5
-        draw.text((x_start + logo.width + gap, text_y), wm_text, fill=TEXT_PRIMARY, font=wm_font)
+
+    icon = load_logo(icon_h, tint=ACCENT)
+    wordmark = load_wordmark(wm_h, tint=TEXT_PRIMARY)
+
+    if wordmark is None:
+        # Fallback: hand-rendered text.
+        draw = ImageDraw.Draw(img)
+        wm_font = get_font(30, "semibold")
+        wm_text = "ropewalk"
+        bbox = draw.textbbox((0, 0), wm_text, font=wm_font)
+        wm_w = bbox[2] - bbox[0]
+        if icon is not None:
+            total_w = icon.width + gap + wm_w
+            x_start = img.width - total_w - right_pad
+            y_center = img.height - bottom_pad - icon_h
+            img.paste(icon, (x_start, y_center), icon)
+            text_y = y_center + (icon_h - 30) // 2 - 5
+            draw.text((x_start + icon.width + gap, text_y),
+                      wm_text, fill=TEXT_PRIMARY, font=wm_font)
+        else:
+            draw.text((img.width - wm_w - right_pad, img.height - bottom_pad - 30),
+                      wm_text, fill=TEXT_PRIMARY, font=wm_font)
+        return
+
+    # Happy path: icon + raster wordmark.
+    total_w = (icon.width if icon else 0) + (gap if icon else 0) + wordmark.width
+    x_start = img.width - total_w - right_pad
+    y_baseline = img.height - bottom_pad
+    if icon is not None:
+        icon_y = y_baseline - icon_h
+        img.paste(icon, (x_start, icon_y), icon)
+        wm_x = x_start + icon.width + gap
     else:
-        draw.text((img.width - wm_w - right_pad, img.height - bottom_pad - 30), wm_text, fill=TEXT_PRIMARY, font=wm_font)
+        wm_x = x_start
+    # Vertically align wordmark's optical center with the icon
+    wm_y = y_baseline - icon_h + (icon_h - wm_h) // 2 + 2
+    img.paste(wordmark, (wm_x, wm_y), wordmark)

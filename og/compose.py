@@ -152,9 +152,148 @@ def render_generation_card(data: dict) -> bytes:
     return out.getvalue()
 
 
+def render_model_card(data: dict) -> bytes:
+    """
+    Branded card for a model page (/model/:id).
+
+    Required fields in `data`:
+      - name: str (model.label)
+    Optional:
+      - icon_url: str (model.iconUrl — raster PNG/JPEG works; SVG falls back)
+      - fallback_image_url: str (typically model.examples[0] — used if icon_url
+        is SVG or unreachable, since Ropewalk icons are often SVG)
+      - author: str (provider / org name)
+      - description: str (short blurb; 2-line clamp)
+      - model_type: str ('Image', 'Video', 'Text', 'Audio', '3D' etc)
+    """
+    name = (data.get("name") or "").strip()
+    icon_url = (data.get("icon_url") or "").strip()
+    fallback_image_url = (data.get("fallback_image_url") or "").strip()
+    author = (data.get("author") or "").strip()
+    description = (data.get("description") or "").strip()
+    model_type = (data.get("model_type") or "").strip()
+
+    canvas = c.vertical_gradient(CARD_W, CARD_H, c.BG_TOP, c.BG_BOTTOM).convert("RGBA")
+
+    # Subtle teal glow behind the icon area to hint at brand.
+    glow_layer = Image.new("RGBA", (CARD_W, CARD_H), (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(glow_layer)
+    steps = 50
+    cx, cy = 260, CARD_H // 2
+    for i in range(steps, 0, -1):
+        t = i / steps
+        a = int(50 * (1 - t) ** 2)
+        r = int(520 * t)
+        gdraw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=c.ACCENT + (a,))
+    from PIL import ImageFilter as _IF
+    glow_layer = glow_layer.filter(_IF.GaussianBlur(28))
+    canvas = Image.alpha_composite(canvas, glow_layer)
+
+    # Icon block — big rounded square on the left. Try icon_url first; if that
+    # fails (SVG / unreachable), fall back to the model's first example image,
+    # then to the Ropewalk logo so the frame is never empty.
+    icon_size = 280
+    icon_x, icon_y = 80, (CARD_H - icon_size) // 2
+    icon_img = _fetch_image(icon_url) if icon_url else None
+    if icon_img is None and fallback_image_url:
+        icon_img = _fetch_image(fallback_image_url)
+
+    # Frame (always drawn, acts as a visual anchor even on the fallback paths)
+    frame = Image.new("RGBA", (icon_size + 16, icon_size + 16), (0, 0, 0, 0))
+    fdraw = ImageDraw.Draw(frame)
+    fdraw.rounded_rectangle(
+        (0, 0, frame.width, frame.height),
+        radius=38,
+        fill=c.NODE_FILL + (255,),
+        outline=c.NODE_STROKE + (255,),
+        width=2,
+    )
+    canvas.paste(frame, (icon_x - 8, icon_y - 8), frame)
+
+    if icon_img is not None:
+        icon_cover = c.resize_cover(icon_img, icon_size, icon_size)
+        icon_rounded = c.round_corners(icon_cover, 32)
+        canvas.paste(icon_rounded, (icon_x, icon_y), icon_rounded)
+    else:
+        # Final fallback: Ropewalk logo tinted teal, centred in the frame.
+        logo = c.load_logo(int(icon_size * 0.55), tint=c.ACCENT)
+        if logo is not None:
+            lx = icon_x + (icon_size - logo.width) // 2
+            ly = icon_y + (icon_size - logo.height) // 2
+            canvas.paste(logo, (lx, ly), logo)
+
+    # Right column — text block, vertically centered against the icon.
+    col_x = icon_x + icon_size + 72
+    col_w = CARD_W - col_x - 80
+    draw = ImageDraw.Draw(canvas)
+
+    # --- First pass: measure everything so we can center the block.
+    CHIP_H = 44     # includes padding
+    CHIP_TO_NAME = 18
+    NAME_LINE_H = 80
+    NAME_FONT = c.get_font(68, "bold")
+    NAME_TO_BY = 8
+    BY_H = 36
+    BY_FONT = c.get_font(26, "regular")
+    BY_TO_DESC = 22
+    DESC_LINE_H = 36
+    DESC_FONT = c.get_font(26, "regular")
+
+    name_lines = c.clamp_lines(
+        c.wrap_text(draw, name or "Model", NAME_FONT, col_w), 2
+    )
+    desc_lines = c.clamp_lines(
+        c.wrap_text(draw, description, DESC_FONT, col_w), 2
+    ) if description else []
+
+    has_type = bool(model_type)
+    has_author = bool(author)
+    total_h = 0
+    if has_type:
+        total_h += CHIP_H + CHIP_TO_NAME
+    total_h += NAME_LINE_H * len(name_lines)
+    if has_author:
+        total_h += NAME_TO_BY + BY_H
+    if desc_lines:
+        total_h += BY_TO_DESC + DESC_LINE_H * len(desc_lines)
+
+    # Center vertically against the icon (icon_y .. icon_y + icon_size)
+    icon_center_y = icon_y + icon_size // 2
+    y = icon_center_y - total_h // 2
+
+    # --- Second pass: actually draw.
+    if has_type:
+        _draw_chip(
+            canvas, col_x, y,
+            model_type.upper(),
+            dot_color=c.ACCENT, font_size=20, weight="bold",
+        )
+        y += CHIP_H + CHIP_TO_NAME
+    for line in name_lines:
+        draw.text((col_x, y), line, fill=c.TEXT_PRIMARY, font=NAME_FONT)
+        y += NAME_LINE_H
+    if has_author:
+        draw.text((col_x, y + NAME_TO_BY), f"by {author}", fill=c.TEXT_SECONDARY, font=BY_FONT)
+        y += NAME_TO_BY + BY_H
+    if desc_lines:
+        y += BY_TO_DESC
+        for line in desc_lines:
+            draw.text((col_x, y), line, fill=c.TEXT_PRIMARY, font=DESC_FONT)
+            y += DESC_LINE_H
+
+    final = canvas.convert("RGB")
+    c.paste_wordmark(final, right_pad=40, bottom_pad=32)
+
+    out = io.BytesIO()
+    final.save(out, "WEBP", quality=82, method=6)
+    return out.getvalue()
+
+
 def compose_card(data: dict) -> bytes:
     template = (data or {}).get("template") or ""
     payload = (data or {}).get("data") or {}
     if template == "generation":
         return render_generation_card(payload)
+    if template == "model":
+        return render_model_card(payload)
     raise ValueError(f"Unknown OG card template: {template!r}")

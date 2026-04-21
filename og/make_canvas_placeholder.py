@@ -187,28 +187,11 @@ def main():
     sub = "Connect models, images, and ideas on an infinite canvas."
     draw.text((90, chip_y + chip_h + 24 + 86), sub, fill=TEXT_SECONDARY, font=sub_font)
 
-    # --- Wordmark bottom-right: real logo + Public Sans text ---
-    wm_font = load_font(32, "semibold")
-    wm_text = "ropewalk"
-    bbox = draw.textbbox((0, 0), wm_text, font=wm_font)
-    wm_w = bbox[2] - bbox[0]
-    logo_h = 44
-    logo = load_logo(logo_h, tint=ACCENT)
-    gap = 14
-    right_pad = 64
-    bottom_pad = 48
-    if logo is not None:
-        total_w = logo.width + gap + wm_w
-        x_start = W - total_w - right_pad
-        y_center = H - bottom_pad - logo_h
-        img.paste(logo, (x_start, y_center), logo)
-        draw = ImageDraw.Draw(img)
-        # vertically center text against logo
-        text_y = y_center + (logo_h - 32) // 2 - 6
-        draw.text((x_start + logo.width + gap, text_y), wm_text, fill=TEXT_PRIMARY, font=wm_font)
-    else:
-        # fallback: just wordmark
-        draw.text((W - wm_w - right_pad, H - bottom_pad - 32), wm_text, fill=TEXT_PRIMARY, font=wm_font)
+    # --- Wordmark bottom-right: shared lockup (icon + raster wordmark) ---
+    from common import paste_wordmark as _paste_wordmark
+    paste_target = img.convert("RGB")
+    _paste_wordmark(paste_target, right_pad=56, bottom_pad=42)
+    img = paste_target
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     img.save(OUT, "PNG", optimize=True)
