@@ -33,15 +33,25 @@ def _fetch_image(url: str):
 def _draw_chip(img: Image.Image, x: int, y: int, text: str, fg=c.TEXT_PRIMARY,
                bg=c.CHIP_BG, outline=c.NODE_STROKE, dot_color=None, font_size: int = 22,
                weight: str = "bold") -> tuple:
-    """Pill-shaped chip; returns the chip's bottom-right corner coordinates."""
+    """Pill-shaped chip; returns the chip's bottom-right corner coordinates.
+
+    Layout (symmetric):
+      [pad_x][dot][gap_dot_text][text][pad_x]
+    """
     draw = ImageDraw.Draw(img)
     font = c.get_font(font_size, weight)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    pad_x, pad_y = 18, 10
-    chip_h = th + pad_y * 2 + 4
-    dot_lead = 22 if dot_color is not None else 0
-    chip_w = tw + pad_x * 2 + dot_lead
+    # Use font's actual ascent/descent so vertical centering doesn't drift
+    # based on the glyphs present (e.g. a chip with only uppercase letters
+    # otherwise sits higher than one with descenders).
+    ascent, descent = font.getmetrics()
+    text_h = ascent + descent
+    tw = draw.textlength(text, font=font)
+    pad_x, pad_y = 20, 10
+    dot_r = 5
+    gap_dot_text = 10
+    dot_lead = (dot_r * 2 + gap_dot_text) if dot_color is not None else 0
+    chip_h = text_h + pad_y * 2
+    chip_w = int(pad_x + dot_lead + tw + pad_x)
     draw.rounded_rectangle(
         (x, y, x + chip_w, y + chip_h),
         radius=chip_h // 2,
@@ -50,14 +60,17 @@ def _draw_chip(img: Image.Image, x: int, y: int, text: str, fg=c.TEXT_PRIMARY,
         width=1,
     )
     if dot_color is not None:
-        dot_r = 5
-        dot_x = x + 16
-        dot_y = y + chip_h // 2
-        draw.ellipse((dot_x - dot_r, dot_y - dot_r, dot_x + dot_r, dot_y + dot_r), fill=dot_color)
-        text_x = dot_x + 12
+        dot_cx = x + pad_x + dot_r
+        dot_cy = y + chip_h // 2
+        draw.ellipse(
+            (dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r),
+            fill=dot_color,
+        )
+        text_x = x + pad_x + dot_lead
     else:
         text_x = x + pad_x
-    draw.text((text_x, y + pad_y + 1), text, fill=fg, font=font)
+    # Baseline anchor for consistent vertical alignment across chips
+    draw.text((text_x, y + pad_y), text, fill=fg, font=font)
     return x + chip_w, y + chip_h
 
 
@@ -112,36 +125,46 @@ def render_generation_card(data: dict) -> bytes:
         canvas.paste(ring, (thumb_x - 2, thumb_y - 2), ring)
         canvas.paste(thumb_rounded, (thumb_x, thumb_y), thumb_rounded)
 
+    # --- Bottom-left brand badge, flush with the thumbnail's bottom edge.
+    # Replaces the baked-in image watermark — the hero is now the optimised
+    # (un-watermarked) file, so we reintroduce the Ropewalk mark here in a
+    # controlled way and align it with the image's bottom line.
+    c.paste_brand_badge(
+        canvas,
+        x=thumb_x + 18,
+        bottom_y=thumb_y + thumb_size - 18,
+    )
+
     # --- Right text column ---
     col_x = thumb_x + thumb_size + 56
     col_w = CARD_W - col_x - 56
 
-    # Author chip (top)
-    chip_y = thumb_y + 8
+    # Stack top-down: model chip → author chip → prompt.
+    # Matches the in-app chat layout where the model label heads the message
+    # and the author sits right above their prompt.
+    stack_y = thumb_y + 8
+
+    if model_label:
+        _, stack_y = _draw_chip(
+            canvas, col_x, stack_y,
+            model_label, dot_color=c.ACCENT,
+            bg=c.CHIP_BG, font_size=22, weight="bold",
+        )
+        stack_y += 12
+
     if is_agent_run:
         chip_text = f"AGENT · @{username}" if username else "AGENT RUN"
-        dot = c.ACCENT
     else:
         chip_text = f"@{username}" if username else "Ropewalk"
-        dot = c.ACCENT
-    _, chip_bottom = _draw_chip(canvas, col_x, chip_y, chip_text, dot_color=dot)
+    _, stack_y = _draw_chip(canvas, col_x, stack_y, chip_text, dot_color=c.ACCENT)
 
     # Prompt — the main message, clamp at 4 lines of 36px
-    prompt_y = chip_bottom + 28
-    prompt_end_y = _render_text_block(
+    prompt_y = stack_y + 24
+    _render_text_block(
         canvas, prompt, col_x, prompt_y, col_w,
         font_size=36, line_height=48, max_lines=4,
         weight="semibold", fill=c.TEXT_PRIMARY,
     )
-
-    # Model chip (bottom of column)
-    if model_label:
-        model_chip_y = thumb_y + thumb_size - 48
-        _draw_chip(
-            canvas, col_x, model_chip_y,
-            model_label, dot_color=c.MUTED_ACCENT,
-            bg=c.CHIP_BG, font_size=20, weight="semibold",
-        )
 
     # --- Wordmark bottom-right ---
     final = canvas.convert("RGB")

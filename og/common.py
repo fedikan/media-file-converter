@@ -161,15 +161,20 @@ def load_wordmark(target_height: int, tint=None) -> Image.Image:
     return wm
 
 
+WHITE = (255, 255, 255)
+
+
 def paste_wordmark(img: Image.Image, right_pad: int = 48, bottom_pad: int = 40):
-    """Bottom-right ropewalk lockup: icon + wordmark, both teal-tinted.
+    """Bottom-right ropewalk lockup: icon + wordmark, both rendered in white
+    so the brand mark stays legible on any hero background without bleeding
+    its accent color across the card.
     Prefers the real wordmark PNG; falls back to Public Sans text if missing."""
     icon_h = 42
     wm_h = 34
     gap = 12
 
-    icon = load_logo(icon_h, tint=ACCENT)
-    wordmark = load_wordmark(wm_h, tint=TEXT_PRIMARY)
+    icon = load_logo(icon_h, tint=WHITE)
+    wordmark = load_wordmark(wm_h, tint=WHITE)
 
     if wordmark is None:
         # Fallback: hand-rendered text.
@@ -204,3 +209,45 @@ def paste_wordmark(img: Image.Image, right_pad: int = 48, bottom_pad: int = 40):
     # Vertically align wordmark's optical center with the icon
     wm_y = y_baseline - icon_h + (icon_h - wm_h) // 2 + 2
     img.paste(wordmark, (wm_x, wm_y), wordmark)
+
+
+def paste_brand_badge(img: Image.Image, x: int, bottom_y: int,
+                      icon_h: int = 22, text_h: int = 18):
+    """Small dark-pill brand badge: white Ropewalk icon + "Ropewalk" text.
+    Drawn so the badge's bottom edge sits exactly on `bottom_y` — used to
+    pin the mark to the bottom line of the hero thumbnail.
+    """
+    draw = ImageDraw.Draw(img)
+    icon = load_logo(icon_h, tint=WHITE)
+    font = get_font(text_h, "bold")
+    label = "Ropewalk"
+    tw = draw.textlength(label, font=font)
+    ascent, descent = font.getmetrics()
+    glyph_h = ascent + descent
+
+    pad_x = 12
+    pad_y = 8
+    gap = 8
+    icon_w = icon.width if icon is not None else 0
+    content_h = max(icon_h, glyph_h)
+    pill_h = content_h + pad_y * 2
+    pill_w = int(pad_x + icon_w + (gap if icon is not None else 0) + tw + pad_x)
+
+    pill_x = x
+    pill_y = bottom_y - pill_h
+    # Dark, semi-transparent pill so the badge reads on bright images too.
+    pill = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
+    pdraw = ImageDraw.Draw(pill)
+    pdraw.rounded_rectangle(
+        (0, 0, pill_w, pill_h),
+        radius=pill_h // 2,
+        fill=(0, 0, 0, 180),
+    )
+    if icon is not None:
+        icon_y_in_pill = (pill_h - icon_h) // 2
+        pill.paste(icon, (pad_x, icon_y_in_pill), icon)
+    # Vertically center the text via ascent so capital-height aligns with icon
+    text_x_in_pill = pad_x + icon_w + (gap if icon is not None else 0)
+    text_y_in_pill = (pill_h - glyph_h) // 2
+    pdraw.text((text_x_in_pill, text_y_in_pill), label, fill=WHITE, font=font)
+    img.paste(pill, (pill_x, pill_y), pill)
