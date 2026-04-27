@@ -7,9 +7,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FONTS_DIR = os.path.join(HERE, "fonts")
 ASSETS_DIR = os.path.join(HERE, "assets")
 
-FONT_REGULAR = os.path.join(FONTS_DIR, "PublicSans-Regular.ttf")
-FONT_SEMIBOLD = os.path.join(FONTS_DIR, "PublicSans-SemiBold.ttf")
-FONT_BOLD = os.path.join(FONTS_DIR, "PublicSans-Bold.ttf")
+# Inter (not Public Sans) — same humanist sans-serif feel but with full
+# Cyrillic coverage. Public Sans ships Latin-only, which rendered every
+# Russian title as tofu boxes when we localized the cards.
+FONT_REGULAR = os.path.join(FONTS_DIR, "Inter-Regular.ttf")
+FONT_SEMIBOLD = os.path.join(FONTS_DIR, "Inter-SemiBold.ttf")
+FONT_BOLD = os.path.join(FONTS_DIR, "Inter-Bold.ttf")
 LOGO_PNG = os.path.join(ASSETS_DIR, "LOGO_512.png")
 LOGO_TEXT_PNG = os.path.join(ASSETS_DIR, "LOGO_TEXT.png")
 
