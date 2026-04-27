@@ -14,6 +14,7 @@ import requests
 from PIL import Image, ImageDraw
 
 from . import common as c
+from .i18n import T, plural, model_type_label, DEFAULT_LOCALE
 
 CARD_W, CARD_H = 1200, 630
 FETCH_TIMEOUT = 5.0
@@ -98,12 +99,14 @@ def render_generation_card(data: dict) -> bytes:
       - is_agent_run: bool (default False)
     Optional:
       - model_icon_url: str
+      - locale: str ('en' | 'ru', default 'en')
     """
     background_url = data.get("background_url") or ""
     prompt = (data.get("prompt") or "").strip()
     username = (data.get("username") or "").strip()
     model_label = (data.get("model_label") or "").strip()
     is_agent_run = bool(data.get("is_agent_run"))
+    locale = data.get("locale") or DEFAULT_LOCALE
 
     # --- Base: blurred hero as background; plain gradient if fetch fails.
     bg = _fetch_image(background_url)
@@ -153,9 +156,10 @@ def render_generation_card(data: dict) -> bytes:
         stack_y += 12
 
     if is_agent_run:
-        chip_text = f"AGENT · @{username}" if username else "AGENT RUN"
+        agent_label = T("generation.agentLabel", locale)
+        chip_text = f"{agent_label} · @{username}" if username else T("generation.agentRunFallback", locale)
     else:
-        chip_text = f"@{username}" if username else "Ropewalk"
+        chip_text = f"@{username}" if username else T("generation.brandFallback", locale)
     _, stack_y = _draw_chip(canvas, col_x, stack_y, chip_text, dot_color=c.ACCENT)
 
     # Prompt — the main message, clamp at 4 lines of 36px
@@ -188,6 +192,7 @@ def render_model_card(data: dict) -> bytes:
       - author: str (provider / org name)
       - description: str (short blurb; 2-line clamp)
       - model_type: str ('Image', 'Video', 'Text', 'Audio', '3D' etc)
+      - locale: str ('en' | 'ru', default 'en')
     """
     name = (data.get("name") or "").strip()
     icon_url = (data.get("icon_url") or "").strip()
@@ -195,6 +200,7 @@ def render_model_card(data: dict) -> bytes:
     author = (data.get("author") or "").strip()
     description = (data.get("description") or "").strip()
     model_type = (data.get("model_type") or "").strip()
+    locale = data.get("locale") or DEFAULT_LOCALE
 
     canvas = c.vertical_gradient(CARD_W, CARD_H, c.BG_TOP, c.BG_BOTTOM).convert("RGBA")
 
@@ -263,7 +269,7 @@ def render_model_card(data: dict) -> bytes:
     DESC_FONT = c.get_font(26, "regular")
 
     name_lines = c.clamp_lines(
-        c.wrap_text(draw, name or "Model", NAME_FONT, col_w), 2
+        c.wrap_text(draw, name or T("model.fallbackName", locale), NAME_FONT, col_w), 2
     )
     desc_lines = c.clamp_lines(
         c.wrap_text(draw, description, DESC_FONT, col_w), 2
@@ -288,7 +294,7 @@ def render_model_card(data: dict) -> bytes:
     if has_type:
         _draw_chip(
             canvas, col_x, y,
-            model_type.upper(),
+            model_type_label(model_type, locale),
             dot_color=c.ACCENT, font_size=20, weight="bold",
         )
         y += CHIP_H + CHIP_TO_NAME
@@ -296,7 +302,8 @@ def render_model_card(data: dict) -> bytes:
         draw.text((col_x, y), line, fill=c.TEXT_PRIMARY, font=NAME_FONT)
         y += NAME_LINE_H
     if has_author:
-        draw.text((col_x, y + NAME_TO_BY), f"by {author}", fill=c.TEXT_SECONDARY, font=BY_FONT)
+        draw.text((col_x, y + NAME_TO_BY), T("model.by", locale, author=author),
+                  fill=c.TEXT_SECONDARY, font=BY_FONT)
         y += NAME_TO_BY + BY_H
     if desc_lines:
         y += BY_TO_DESC
@@ -330,9 +337,11 @@ def render_canvas_card(data: dict) -> bytes:
       - description: str
       - owner_username: str
       - node_count: int
-      - updated_ago: str (e.g. "2d ago", prepared server-side)
+      - updated_ago: str (e.g. "2d ago", prepared server-side & already localized)
+      - locale: str ('en' | 'ru', default 'en')
     """
-    name = (data.get("name") or "").strip() or "Untitled canvas"
+    locale = data.get("locale") or DEFAULT_LOCALE
+    name = (data.get("name") or "").strip() or T("canvas.untitledName", locale)
     preview_url = (data.get("preview_url") or "").strip()
     description = (data.get("description") or "").strip()
     owner_username = (data.get("owner_username") or "").strip()
@@ -405,7 +414,7 @@ def render_canvas_card(data: dict) -> bytes:
 
     meta_bits = []
     if isinstance(node_count, int) and node_count >= 0:
-        meta_bits.append(f"{node_count} node{'s' if node_count != 1 else ''}")
+        meta_bits.append(plural(node_count, "canvas.nodes", locale))
     if owner_username:
         meta_bits.append(f"@{owner_username}")
     if updated_ago:
@@ -422,7 +431,8 @@ def render_canvas_card(data: dict) -> bytes:
     y = hero_center_y - total_h // 2
 
     # Draw chip
-    _draw_chip(canvas, LEFT_X, y, "CANVAS", dot_color=c.ACCENT, font_size=20, weight="bold")
+    _draw_chip(canvas, LEFT_X, y, T("canvas.chip", locale),
+               dot_color=c.ACCENT, font_size=20, weight="bold")
     y += CHIP_H + CHIP_TO_NAME
     # Name
     for line in name_lines:
@@ -448,6 +458,104 @@ def render_canvas_card(data: dict) -> bytes:
     return out.getvalue()
 
 
+def render_marketing_card(data: dict) -> bytes:
+    """
+    Branded card for evergreen marketing pages (`/`, `/pricing`, `/about`, …).
+
+    Layout:
+      - Brand vertical gradient + faint diagonal accent
+      - Centered Ropewalk logo + wordmark stacked vertically
+      - Title (large, bold) and subtitle (secondary text), both centered
+      - Optional `hero_url` painted as a blurred, darkened backdrop layer
+
+    Required:
+      - title: str (already localized by the caller)
+    Optional:
+      - subtitle: str (already localized)
+      - hero_url: str (image fetched and used as blurred backdrop)
+      - locale: str ('en' | 'ru', default 'en') — used only to satisfy the
+        input-hash invariant; this template doesn't draw locale-aware text
+        beyond what the caller already provided.
+    """
+    title = (data.get("title") or "").strip()
+    subtitle = (data.get("subtitle") or "").strip()
+    hero_url = (data.get("hero_url") or "").strip()
+    # locale is part of the input hash (caller-supplied) but we don't need it
+    # to draw — title/subtitle already arrive localized.
+    _ = data.get("locale") or DEFAULT_LOCALE
+
+    # --- Backdrop: blurred hero if provided, otherwise the brand gradient.
+    bg = _fetch_image(hero_url) if hero_url else None
+    if bg is not None:
+        canvas = c.blur_cover(bg, CARD_W, CARD_H, blur_radius=48, darkness=0.62)
+    else:
+        canvas = c.vertical_gradient(CARD_W, CARD_H, c.BG_TOP, c.BG_BOTTOM)
+    canvas = canvas.convert("RGBA")
+
+    draw = ImageDraw.Draw(canvas)
+
+    # --- Measure-then-draw so the stack is perfectly centered.
+    LOGO_H = 96
+    LOGO_TO_WORDMARK = 14
+    WORDMARK_H = 56
+    WORDMARK_TO_TITLE = 56
+    TITLE_FONT = c.get_font(72, "bold")
+    TITLE_LINE_H = 84
+    TITLE_TO_SUB = 24
+    SUB_FONT = c.get_font(30, "regular")
+    SUB_LINE_H = 42
+
+    title_max_w = CARD_W - 160  # 80 left + 80 right
+    sub_max_w = CARD_W - 240    # narrower so subtitle reads as supporting copy
+
+    title_lines = c.clamp_lines(c.wrap_text(draw, title, TITLE_FONT, title_max_w), 2) \
+        if title else []
+    sub_lines = c.clamp_lines(c.wrap_text(draw, subtitle, SUB_FONT, sub_max_w), 2) \
+        if subtitle else []
+
+    block_h = LOGO_H + LOGO_TO_WORDMARK + WORDMARK_H
+    if title_lines:
+        block_h += WORDMARK_TO_TITLE + TITLE_LINE_H * len(title_lines)
+    if sub_lines:
+        block_h += TITLE_TO_SUB + SUB_LINE_H * len(sub_lines)
+
+    y = (CARD_H - block_h) // 2
+
+    # Logo (centered)
+    logo = c.load_logo(LOGO_H, tint=c.WHITE)
+    if logo is not None:
+        canvas.paste(logo, ((CARD_W - logo.width) // 2, y), logo)
+    y += LOGO_H + LOGO_TO_WORDMARK
+
+    # Wordmark (centered)
+    wm = c.load_wordmark(WORDMARK_H, tint=c.WHITE)
+    if wm is not None:
+        canvas.paste(wm, ((CARD_W - wm.width) // 2, y), wm)
+    y += WORDMARK_H
+
+    # Title (centered, multi-line)
+    if title_lines:
+        y += WORDMARK_TO_TITLE
+        for line in title_lines:
+            tw = draw.textlength(line, font=TITLE_FONT)
+            draw.text(((CARD_W - tw) // 2, y), line, fill=c.TEXT_PRIMARY, font=TITLE_FONT)
+            y += TITLE_LINE_H
+
+    # Subtitle (centered, multi-line)
+    if sub_lines:
+        y += TITLE_TO_SUB
+        for line in sub_lines:
+            sw = draw.textlength(line, font=SUB_FONT)
+            draw.text(((CARD_W - sw) // 2, y), line, fill=c.TEXT_SECONDARY, font=SUB_FONT)
+            y += SUB_LINE_H
+
+    final = canvas.convert("RGB")
+
+    out = io.BytesIO()
+    final.save(out, "WEBP", quality=82, method=6)
+    return out.getvalue()
+
+
 def compose_card(data: dict) -> bytes:
     template = (data or {}).get("template") or ""
     payload = (data or {}).get("data") or {}
@@ -457,4 +565,6 @@ def compose_card(data: dict) -> bytes:
         return render_model_card(payload)
     if template == "canvas":
         return render_canvas_card(payload)
+    if template == "marketing":
+        return render_marketing_card(payload)
     raise ValueError(f"Unknown OG card template: {template!r}")
