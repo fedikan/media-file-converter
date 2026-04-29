@@ -836,21 +836,25 @@ def extract_last_frame():
     file.save(temp_video_path)
     cap = None
     try:
+        # Try OpenCV first — fast in-process, no subprocess overhead.
         cap = cv2.VideoCapture(temp_video_path)
-        if not cap.isOpened():
-            return 'Could not open video', 400
-
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame = None
-
-        # Try to jump to the last frame
-        if frame_count and frame_count > 1:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 1)
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                # Fallback: step from a few frames before the end
-                start = max(0, frame_count - 5)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        if cap.isOpened():
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if frame_count and frame_count > 1:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 1)
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    start = max(0, frame_count - 5)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+                    last = None
+                    while True:
+                        ret, f = cap.read()
+                        if not ret:
+                            break
+                        last = f
+                    frame = last
+            else:
                 last = None
                 while True:
                     ret, f = cap.read()
@@ -858,17 +862,50 @@ def extract_last_frame():
                         break
                     last = f
                 frame = last
-        else:
-            # Unknown frame count, iterate to the end
-            last = None
-            while True:
-                ret, f = cap.read()
-                if not ret:
-                    break
-                last = f
-            frame = last
+        try:
+            if cap is not None:
+                cap.release()
+        except Exception:
+            pass
+        cap = None
 
+        # Fallback: many Replicate-served videos (Seedance, Grok, etc.) confuse
+        # OpenCV's seek semantics. Use ffmpeg's -sseof (seek from end) which is
+        # robust across containers/codecs. (B-2)
         if frame is None:
+            ffmpeg_jpeg = f'/tmp/{str(uuid.uuid4())}.jpg'
+            try:
+                import subprocess
+                subprocess.run(
+                    [
+                        'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+                        '-sseof', '-0.5', '-i', temp_video_path,
+                        '-frames:v', '1', '-q:v', '2', ffmpeg_jpeg,
+                    ],
+                    check=True, timeout=60,
+                )
+                if os.path.exists(ffmpeg_jpeg) and os.path.getsize(ffmpeg_jpeg) > 0:
+                    pil_img = Image.open(ffmpeg_jpeg).convert('RGB')
+                    img_io = io.BytesIO()
+                    pil_img.save(img_io, 'WEBP', quality=95)
+                    img_io.seek(0)
+                    return send_file(
+                        img_io,
+                        mimetype='image/webp',
+                        as_attachment=True,
+                        download_name='last_frame.webp',
+                    )
+            except subprocess.TimeoutExpired:
+                return 'Could not extract last frame from video (ffmpeg timeout)', 500
+            except subprocess.CalledProcessError as ffe:
+                return f'Could not extract last frame from video (ffmpeg failed): {ffe}', 500
+            finally:
+                if os.path.exists(ffmpeg_jpeg):
+                    try:
+                        os.remove(ffmpeg_jpeg)
+                    except Exception:
+                        pass
+
             return 'Could not extract last frame from video', 400
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
