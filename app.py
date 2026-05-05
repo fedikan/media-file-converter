@@ -1430,6 +1430,142 @@ def downscale_image():
                 pass
 
 
+# ---------------------------------------------------------------------------
+# Generic transcoders used by the backend ConversionService to satisfy
+# per-setting `targetFormat` declarations. These re-encode any input into the
+# requested container/codec, optionally downscaling and trimming. They are
+# intentionally simple wrappers around ffmpeg.
+# ---------------------------------------------------------------------------
+
+def _ffmpeg_to(input_path, output_path, *, vf=None, acodec=None, vcodec=None,
+               max_duration=None, output_format=None):
+    """Run ffmpeg with consistent flags. Raises CalledProcessError on failure."""
+    import subprocess
+    cmd = ['ffmpeg', '-y', '-i', input_path]
+    if max_duration:
+        cmd += ['-t', str(int(max_duration))]
+    if vf:
+        cmd += ['-vf', vf]
+    if vcodec:
+        cmd += ['-c:v', vcodec]
+    if acodec:
+        cmd += ['-c:a', acodec]
+    # Sensible defaults for video output
+    if output_format in ('mp4', 'mov', 'm4v'):
+        cmd += ['-movflags', '+faststart', '-pix_fmt', 'yuv420p']
+    cmd += [output_path]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+
+
+@app.route('/transform-video', methods=['POST'])
+def transform_video():
+    """Re-encode a video to a target container, optionally downscale + trim.
+
+    Form fields:
+      file:           required, the source video upload
+      output_format:  optional (default 'mp4'); one of mp4|webm|mov|m4v
+      max_width:      optional int; downscale (preserve aspect) if larger
+      max_duration:   optional int seconds; trim if longer
+    """
+    if 'file' not in request.files:
+        return 'No file part', 400
+    f = request.files['file']
+    if not f or f.filename == '':
+        return 'No selected file', 400
+
+    output_format = (request.form.get('output_format') or 'mp4').lower()
+    max_width = request.form.get('max_width', type=int)
+    max_duration = request.form.get('max_duration', type=int)
+
+    temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+    try:
+        in_path = os.path.join(temp_dir, 'in_' + (f.filename or 'video'))
+        out_path = os.path.join(temp_dir, f'out.{output_format}')
+        f.save(in_path)
+
+        vf = None
+        if max_width and max_width > 0:
+            # scale=W:-2 keeps aspect, ensures even height required by yuv420p
+            vf = f'scale={max_width}:-2'
+
+        # Pick codecs by container
+        if output_format == 'webm':
+            vcodec, acodec = 'libvpx-vp9', 'libopus'
+        else:
+            vcodec, acodec = 'libx264', 'aac'
+
+        _ffmpeg_to(
+            in_path, out_path,
+            vf=vf, vcodec=vcodec, acodec=acodec,
+            max_duration=max_duration, output_format=output_format,
+        )
+        mime = {'mp4': 'video/mp4', 'mov': 'video/quicktime', 'webm': 'video/webm', 'm4v': 'video/mp4'}.get(output_format, 'video/mp4')
+        return send_file(out_path, mimetype=mime, as_attachment=True, download_name=f'transformed.{output_format}')
+    except Exception as e:
+        return f'Video transform failed: {e}', 500
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
+
+
+@app.route('/transform-audio', methods=['POST'])
+def transform_audio():
+    """Re-encode any audio (or extract audio from video) to a target codec.
+
+    Form fields:
+      file:           required, the source audio/video upload
+      output_format:  optional (default 'mp3'); one of mp3|wav|m4a|ogg|flac
+      max_duration:   optional int seconds; trim if longer
+    """
+    if 'file' not in request.files:
+        return 'No file part', 400
+    f = request.files['file']
+    if not f or f.filename == '':
+        return 'No selected file', 400
+
+    output_format = (request.form.get('output_format') or 'mp3').lower()
+    max_duration = request.form.get('max_duration', type=int)
+
+    temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+    try:
+        in_path = os.path.join(temp_dir, 'in_' + (f.filename or 'audio'))
+        out_path = os.path.join(temp_dir, f'out.{output_format}')
+        f.save(in_path)
+
+        codec_map = {
+            'mp3':  ('libmp3lame', 'audio/mpeg'),
+            'wav':  ('pcm_s16le', 'audio/wav'),
+            'm4a':  ('aac', 'audio/mp4'),
+            'ogg':  ('libvorbis', 'audio/ogg'),
+            'flac': ('flac', 'audio/flac'),
+        }
+        if output_format not in codec_map:
+            return f'Unsupported output_format: {output_format}', 400
+        acodec, mime = codec_map[output_format]
+
+        # -vn drops video so this works for both audio uploads and video uploads
+        # where the user wants the audio track only.
+        import subprocess
+        cmd = ['ffmpeg', '-y', '-i', in_path, '-vn']
+        if max_duration:
+            cmd += ['-t', str(int(max_duration))]
+        cmd += ['-c:a', acodec]
+        if output_format == 'mp3':
+            cmd += ['-b:a', '320k']
+        cmd += [out_path]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        return send_file(out_path, mimetype=mime, as_attachment=True, download_name=f'transformed.{output_format}')
+    except Exception as e:
+        return f'Audio transform failed: {e}', 500
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
+
+
 if __name__ == '__main__':
     # Only run the development server if explicitly requested
     import os
