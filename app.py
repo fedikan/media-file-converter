@@ -187,6 +187,19 @@ def convert_image():
         # Open the image
         img = Image.open(file.stream)
 
+        # Apply EXIF orientation so portrait phone photos (esp. HEIC from iOS)
+        # don't end up sideways in the converted output. Pillow exposes a
+        # helper that rotates pixels and strips the EXIF Orientation tag.
+        try:
+            from PIL import ImageOps
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+        # Preserve EXIF on JPEG output (camera metadata; orientation is now
+        # baked into pixels above). WebP/PNG ignore the exif kwarg silently.
+        exif_bytes = img.info.get('exif') or b''
+
         # If no desired dimensions are provided, skip resizing and cropping
         if desired_width > 0 and desired_height > 0:
             # Calculate the desired aspect ratio
@@ -215,9 +228,14 @@ def convert_image():
             img = img.resize((desired_width, desired_height), Image.LANCZOS)
         # Else, proceed without resizing or cropping
 
-        # Convert to the desired format
+        # Convert to the desired format. JPEG/WebP must be RGB (drop alpha).
+        if output_format in ('jpeg', 'jpg') and img.mode in ('RGBA', 'LA', 'P'):
+            img = img.convert('RGB')
         img_io = io.BytesIO()
-        img.save(img_io, format=output_format.upper(), quality=95)  # Adjust quality as needed
+        save_kwargs = {'format': output_format.upper(), 'quality': 95}
+        if exif_bytes and output_format in ('jpeg', 'jpg', 'webp'):
+            save_kwargs['exif'] = exif_bytes
+        img.save(img_io, **save_kwargs)
         img_io.seek(0)
 
         return send_file(img_io, mimetype=f'image/{output_format}')
