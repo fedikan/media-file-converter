@@ -18,6 +18,9 @@ register_heif_opener()
 
 app = Flask(__name__)
 
+from werkzeug.middleware.proxy_fix import ProxyFix
+app.wsgi_app = ProxyFix(app.wsgi_app)
+
 # Configuration for temp directory
 CONFIG = {
     'temp_dir': '/tmp'
@@ -184,6 +187,19 @@ def convert_image():
         # Open the image
         img = Image.open(file.stream)
 
+        # Apply EXIF orientation so portrait phone photos (esp. HEIC from iOS)
+        # don't end up sideways in the converted output. Pillow exposes a
+        # helper that rotates pixels and strips the EXIF Orientation tag.
+        try:
+            from PIL import ImageOps
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+        # Preserve EXIF on JPEG output (camera metadata; orientation is now
+        # baked into pixels above). WebP/PNG ignore the exif kwarg silently.
+        exif_bytes = img.info.get('exif') or b''
+
         # If no desired dimensions are provided, skip resizing and cropping
         if desired_width > 0 and desired_height > 0:
             # Calculate the desired aspect ratio
@@ -212,9 +228,14 @@ def convert_image():
             img = img.resize((desired_width, desired_height), Image.LANCZOS)
         # Else, proceed without resizing or cropping
 
-        # Convert to the desired format
+        # Convert to the desired format. JPEG/WebP must be RGB (drop alpha).
+        if output_format in ('jpeg', 'jpg') and img.mode in ('RGBA', 'LA', 'P'):
+            img = img.convert('RGB')
         img_io = io.BytesIO()
-        img.save(img_io, format=output_format.upper(), quality=95)  # Adjust quality as needed
+        save_kwargs = {'format': output_format.upper(), 'quality': 95}
+        if exif_bytes and output_format in ('jpeg', 'jpg', 'webp'):
+            save_kwargs['exif'] = exif_bytes
+        img.save(img_io, **save_kwargs)
         img_io.seek(0)
 
         return send_file(img_io, mimetype=f'image/{output_format}')
@@ -765,6 +786,40 @@ def format_duration(seconds):
         return f"{minutes:02d}:{secs:02d}"
 
 
+@app.route('/compose-og-card', methods=['POST'])
+def compose_og_card():
+    """Render a branded 1200x630 OG share card for a generation.
+
+    Body JSON:
+      {
+        "template": "generation",
+        "data": {
+          "background_url": "<url of the generation image>",
+          "prompt": "...",
+          "username": "alice",
+          "model_label": "Flux Pro",
+          "is_agent_run": false
+        }
+      }
+    Returns: image/webp bytes.
+    """
+    try:
+        from og.compose import compose_card
+        payload = request.get_json(silent=True) or {}
+        webp_bytes = compose_card(payload)
+        return send_file(
+            io.BytesIO(webp_bytes),
+            mimetype='image/webp',
+            as_attachment=False,
+            download_name='og-card.webp',
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        app.logger.exception('compose-og-card failed')
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint to verify the service is running properly"""
@@ -799,21 +854,25 @@ def extract_last_frame():
     file.save(temp_video_path)
     cap = None
     try:
+        # Try OpenCV first — fast in-process, no subprocess overhead.
         cap = cv2.VideoCapture(temp_video_path)
-        if not cap.isOpened():
-            return 'Could not open video', 400
-
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame = None
-
-        # Try to jump to the last frame
-        if frame_count and frame_count > 1:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 1)
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                # Fallback: step from a few frames before the end
-                start = max(0, frame_count - 5)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        if cap.isOpened():
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if frame_count and frame_count > 1:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count - 1)
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    start = max(0, frame_count - 5)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+                    last = None
+                    while True:
+                        ret, f = cap.read()
+                        if not ret:
+                            break
+                        last = f
+                    frame = last
+            else:
                 last = None
                 while True:
                     ret, f = cap.read()
@@ -821,17 +880,50 @@ def extract_last_frame():
                         break
                     last = f
                 frame = last
-        else:
-            # Unknown frame count, iterate to the end
-            last = None
-            while True:
-                ret, f = cap.read()
-                if not ret:
-                    break
-                last = f
-            frame = last
+        try:
+            if cap is not None:
+                cap.release()
+        except Exception:
+            pass
+        cap = None
 
+        # Fallback: many Replicate-served videos (Seedance, Grok, etc.) confuse
+        # OpenCV's seek semantics. Use ffmpeg's -sseof (seek from end) which is
+        # robust across containers/codecs. (B-2)
         if frame is None:
+            ffmpeg_jpeg = f'/tmp/{str(uuid.uuid4())}.jpg'
+            try:
+                import subprocess
+                subprocess.run(
+                    [
+                        'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
+                        '-sseof', '-0.5', '-i', temp_video_path,
+                        '-frames:v', '1', '-q:v', '2', ffmpeg_jpeg,
+                    ],
+                    check=True, timeout=60,
+                )
+                if os.path.exists(ffmpeg_jpeg) and os.path.getsize(ffmpeg_jpeg) > 0:
+                    pil_img = Image.open(ffmpeg_jpeg).convert('RGB')
+                    img_io = io.BytesIO()
+                    pil_img.save(img_io, 'WEBP', quality=95)
+                    img_io.seek(0)
+                    return send_file(
+                        img_io,
+                        mimetype='image/webp',
+                        as_attachment=True,
+                        download_name='last_frame.webp',
+                    )
+            except subprocess.TimeoutExpired:
+                return 'Could not extract last frame from video (ffmpeg timeout)', 500
+            except subprocess.CalledProcessError as ffe:
+                return f'Could not extract last frame from video (ffmpeg failed): {ffe}', 500
+            finally:
+                if os.path.exists(ffmpeg_jpeg):
+                    try:
+                        os.remove(ffmpeg_jpeg)
+                    except Exception:
+                        pass
+
             return 'Could not extract last frame from video', 400
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1265,6 +1357,313 @@ def analyze_video():
                 os.remove(temp_path)
         except Exception:
             pass
+
+@app.route('/downscale-image', methods=['POST'])
+def downscale_image():
+    """Downscale an image to fit within max dimensions while maintaining aspect ratio."""
+    temp_dir = None
+    try:
+        # Determine input source: file upload or JSON body with imageUrl
+        if 'file' in request.files and request.files['file'].filename != '':
+            uploaded_file = request.files['file']
+            max_width = int(request.form.get('maxWidth', 2048))
+            max_height = int(request.form.get('maxHeight', 2048))
+            quality = int(request.form.get('quality', 90))
+            output_format = request.form.get('outputFormat', 'webp').lower()
+            img = Image.open(uploaded_file.stream)
+        else:
+            data = request.get_json()
+            if not data or not data.get('imageUrl'):
+                return jsonify({'error': 'Either a file upload or imageUrl is required'}), 400
+
+            image_url = data['imageUrl']
+            max_width = int(data.get('maxWidth', 2048))
+            max_height = int(data.get('maxHeight', 2048))
+            quality = int(data.get('quality', 90))
+            output_format = data.get('outputFormat', 'webp').lower()
+
+            ensure_dirs()
+            temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+
+            # Download the image
+            print(f"Downloading image from: {image_url}")
+            response = requests.get(image_url, stream=True, timeout=60)
+            response.raise_for_status()
+
+            from urllib.parse import urlparse
+            parsed_url = urlparse(image_url)
+            ext = os.path.splitext(parsed_url.path)[1] or '.jpg'
+            temp_path = os.path.join(temp_dir, f"image_{uuid.uuid4()}{ext}")
+
+            with open(temp_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            img = Image.open(temp_path)
+
+        if output_format not in ('webp', 'png', 'jpeg', 'jpg'):
+            return jsonify({'error': f'Unsupported output format: {output_format}'}), 400
+        if output_format == 'jpg':
+            output_format = 'jpeg'
+
+        # Convert RGBA to RGB for JPEG output
+        if output_format == 'jpeg' and img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+
+        original_width, original_height = img.size
+
+        # Downscale if needed
+        if original_width > max_width or original_height > max_height:
+            img.thumbnail((max_width, max_height), Image.LANCZOS)
+
+        new_width, new_height = img.size
+
+        # Save to buffer
+        img_io = io.BytesIO()
+        save_kwargs = {'format': output_format.upper()}
+        if output_format in ('jpeg', 'webp'):
+            save_kwargs['quality'] = quality
+        img.save(img_io, **save_kwargs)
+        img_io.seek(0)
+
+        mimetype = f'image/{output_format}'
+        if output_format == 'jpeg':
+            mimetype = 'image/jpeg'
+
+        resp = send_file(img_io, mimetype=mimetype)
+        resp.headers['X-Original-Width'] = str(original_width)
+        resp.headers['X-Original-Height'] = str(original_height)
+        resp.headers['X-New-Width'] = str(new_width)
+        resp.headers['X-New-Height'] = str(new_height)
+        return resp
+
+    except Exception as e:
+        return jsonify({'error': f'Failed to downscale image: {str(e)}'}), 500
+    finally:
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Generic transcoders used by the backend ConversionService to satisfy
+# per-setting `targetFormat` declarations. These re-encode any input into the
+# requested container/codec, optionally downscaling and trimming. They are
+# intentionally simple wrappers around ffmpeg.
+# ---------------------------------------------------------------------------
+
+def _ffmpeg_to(input_path, output_path, *, vf=None, acodec=None, vcodec=None,
+               max_duration=None, output_format=None):
+    """Run ffmpeg with consistent flags. Raises CalledProcessError on failure."""
+    import subprocess
+    cmd = ['ffmpeg', '-y', '-i', input_path]
+    if max_duration:
+        cmd += ['-t', str(int(max_duration))]
+    if vf:
+        cmd += ['-vf', vf]
+    if vcodec:
+        cmd += ['-c:v', vcodec]
+    if acodec:
+        cmd += ['-c:a', acodec]
+    # Sensible defaults for video output
+    if output_format in ('mp4', 'mov', 'm4v'):
+        cmd += ['-movflags', '+faststart', '-pix_fmt', 'yuv420p']
+    cmd += [output_path]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+
+
+@app.route('/transform-video', methods=['POST'])
+def transform_video():
+    """Re-encode a video to a target container, optionally downscale + trim.
+
+    Form fields:
+      file:           required, the source video upload
+      output_format:  optional (default 'mp4'); one of mp4|webm|mov|m4v
+      max_width:      optional int; downscale (preserve aspect) if larger
+      max_duration:   optional int seconds; trim if longer
+    """
+    if 'file' not in request.files:
+        return 'No file part', 400
+    f = request.files['file']
+    if not f or f.filename == '':
+        return 'No selected file', 400
+
+    output_format = (request.form.get('output_format') or 'mp4').lower()
+    max_width = request.form.get('max_width', type=int)
+    max_duration = request.form.get('max_duration', type=int)
+
+    temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+    try:
+        in_path = os.path.join(temp_dir, 'in_' + (f.filename or 'video'))
+        out_path = os.path.join(temp_dir, f'out.{output_format}')
+        f.save(in_path)
+
+        vf = None
+        if max_width and max_width > 0:
+            # scale=W:-2 keeps aspect, ensures even height required by yuv420p
+            vf = f'scale={max_width}:-2'
+
+        # Pick codecs by container
+        if output_format == 'webm':
+            vcodec, acodec = 'libvpx-vp9', 'libopus'
+        else:
+            vcodec, acodec = 'libx264', 'aac'
+
+        _ffmpeg_to(
+            in_path, out_path,
+            vf=vf, vcodec=vcodec, acodec=acodec,
+            max_duration=max_duration, output_format=output_format,
+        )
+        mime = {'mp4': 'video/mp4', 'mov': 'video/quicktime', 'webm': 'video/webm', 'm4v': 'video/mp4'}.get(output_format, 'video/mp4')
+        return send_file(out_path, mimetype=mime, as_attachment=True, download_name=f'transformed.{output_format}')
+    except Exception as e:
+        return f'Video transform failed: {e}', 500
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
+
+
+@app.route('/transform-audio', methods=['POST'])
+def transform_audio():
+    """Re-encode any audio (or extract audio from video) to a target codec.
+
+    Form fields:
+      file:           required, the source audio/video upload
+      output_format:  optional (default 'mp3'); one of mp3|wav|m4a|ogg|flac
+      max_duration:   optional int seconds; trim if longer
+    """
+    if 'file' not in request.files:
+        return 'No file part', 400
+    f = request.files['file']
+    if not f or f.filename == '':
+        return 'No selected file', 400
+
+    output_format = (request.form.get('output_format') or 'mp3').lower()
+    max_duration = request.form.get('max_duration', type=int)
+
+    temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+    try:
+        in_path = os.path.join(temp_dir, 'in_' + (f.filename or 'audio'))
+        out_path = os.path.join(temp_dir, f'out.{output_format}')
+        f.save(in_path)
+
+        codec_map = {
+            'mp3':  ('libmp3lame', 'audio/mpeg'),
+            'wav':  ('pcm_s16le', 'audio/wav'),
+            'm4a':  ('aac', 'audio/mp4'),
+            'ogg':  ('libvorbis', 'audio/ogg'),
+            'flac': ('flac', 'audio/flac'),
+        }
+        if output_format not in codec_map:
+            return f'Unsupported output_format: {output_format}', 400
+        acodec, mime = codec_map[output_format]
+
+        # -vn drops video so this works for both audio uploads and video uploads
+        # where the user wants the audio track only.
+        import subprocess
+        cmd = ['ffmpeg', '-y', '-i', in_path, '-vn']
+        if max_duration:
+            cmd += ['-t', str(int(max_duration))]
+        cmd += ['-c:a', acodec]
+        if output_format == 'mp3':
+            cmd += ['-b:a', '320k']
+        cmd += [out_path]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        return send_file(out_path, mimetype=mime, as_attachment=True, download_name=f'transformed.{output_format}')
+    except Exception as e:
+        return f'Audio transform failed: {e}', 500
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
+
+
+# DOCX/DOC/RTF/ODT → plain text via headless LibreOffice. Called from
+# ropewalk-back/src/entities/file/file.service.ts::uploadDocument at upload
+# time and from the one-shot backfill script. Returns {text, chars,
+# source_format}; on conversion failure returns 500 with stderr trimmed to
+# 2000 chars. Used to feed actual document content to Claude/OpenAI text
+# models instead of shipping DOCX bytes mislabelled as application/pdf
+# (which providers silently fail to decode → empty generation output).
+@app.route('/docx-to-text', methods=['POST'])
+def docx_to_text():
+    import subprocess
+    from pathlib import Path
+
+    ALLOWED_EXTS = {'docx', 'doc', 'rtf', 'odt'}
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'no file in multipart payload under key "file"'}), 400
+    f = request.files['file']
+    filename = f.filename or 'document'
+    ext = Path(filename).suffix.lower().lstrip('.')
+    if ext not in ALLOWED_EXTS:
+        return jsonify({
+            'error': f'unsupported extension: {ext!r}',
+            'allowed': sorted(ALLOWED_EXTS),
+        }), 400
+
+    temp_dir = tempfile.mkdtemp(prefix='docx2txt_')
+    try:
+        # LibreOffice picks the output filename based on the input stem, so use
+        # a deterministic basename to avoid encoding surprises with the user's
+        # original filename (Cyrillic / spaces / etc.).
+        safe_stem = f'doc_{uuid.uuid4().hex}'
+        src = os.path.join(temp_dir, f'{safe_stem}.{ext}')
+        f.save(src)
+
+        # `--convert-to txt:Text` writes <stem>.txt next to the source.
+        # `--headless` avoids opening a GUI; `--norestore` prevents recovery
+        # dialog state from a prior crash from blocking on stdin.
+        result = subprocess.run(
+            [
+                'libreoffice', '--headless', '--norestore',
+                '--convert-to', 'txt:Text',
+                '--outdir', temp_dir, src,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            return jsonify({
+                'error': 'libreoffice conversion failed',
+                'returncode': result.returncode,
+                'stderr': result.stderr.decode('utf-8', 'replace')[:2000],
+            }), 500
+
+        out_path = os.path.join(temp_dir, f'{safe_stem}.txt')
+        if not os.path.exists(out_path):
+            return jsonify({
+                'error': 'libreoffice exited 0 but produced no output file',
+                'stdout': result.stdout.decode('utf-8', 'replace')[:2000],
+                'stderr': result.stderr.decode('utf-8', 'replace')[:2000],
+            }), 500
+
+        with open(out_path, 'r', encoding='utf-8', errors='replace') as out_f:
+            text = out_f.read()
+
+        return jsonify({
+            'text': text,
+            'chars': len(text),
+            'source_format': ext,
+            'source_filename': filename,
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'libreoffice timed out after 60s'}), 504
+    except Exception as e:
+        return jsonify({'error': f'docx-to-text failed: {e}'}), 500
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
+
 
 if __name__ == '__main__':
     # Only run the development server if explicitly requested

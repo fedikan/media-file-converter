@@ -1,6 +1,9 @@
 FROM python:3.9-slim
 
-# Install FFmpeg and other system dependencies
+# Install FFmpeg, LibreOffice (for DOCX/DOC/RTF/ODT → text via /docx-to-text),
+# and other system dependencies. libreoffice-core + libreoffice-writer is the
+# minimal slice that handles the four document formats we care about. Adds
+# ~250 MB to the image — acceptable for a service that already ships ffmpeg.
 RUN apt-get update && \
     apt-get install -y ffmpeg \
         libavcodec-extra \
@@ -9,7 +12,9 @@ RUN apt-get update && \
         libavdevice-dev \
         libswscale-dev \
         libswresample-dev \
-        libpostproc-dev && \
+        libpostproc-dev \
+        libreoffice-core \
+        libreoffice-writer && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -28,6 +33,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the application files
 COPY app.py /app/
 COPY ropewalk-watermark.png /app/
+COPY og/ /app/og/
 # Note: Add watermark file (ropewalk-watermark.png) if needed for watermark functionality
 
 # Create a non-root user for security
