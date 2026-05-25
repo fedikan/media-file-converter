@@ -1584,6 +1584,87 @@ def transform_audio():
             pass
 
 
+# DOCX/DOC/RTF/ODT → plain text via headless LibreOffice. Called from
+# ropewalk-back/src/entities/file/file.service.ts::uploadDocument at upload
+# time and from the one-shot backfill script. Returns {text, chars,
+# source_format}; on conversion failure returns 500 with stderr trimmed to
+# 2000 chars. Used to feed actual document content to Claude/OpenAI text
+# models instead of shipping DOCX bytes mislabelled as application/pdf
+# (which providers silently fail to decode → empty generation output).
+@app.route('/docx-to-text', methods=['POST'])
+def docx_to_text():
+    import subprocess
+    from pathlib import Path
+
+    ALLOWED_EXTS = {'docx', 'doc', 'rtf', 'odt'}
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'no file in multipart payload under key "file"'}), 400
+    f = request.files['file']
+    filename = f.filename or 'document'
+    ext = Path(filename).suffix.lower().lstrip('.')
+    if ext not in ALLOWED_EXTS:
+        return jsonify({
+            'error': f'unsupported extension: {ext!r}',
+            'allowed': sorted(ALLOWED_EXTS),
+        }), 400
+
+    temp_dir = tempfile.mkdtemp(prefix='docx2txt_')
+    try:
+        # LibreOffice picks the output filename based on the input stem, so use
+        # a deterministic basename to avoid encoding surprises with the user's
+        # original filename (Cyrillic / spaces / etc.).
+        safe_stem = f'doc_{uuid.uuid4().hex}'
+        src = os.path.join(temp_dir, f'{safe_stem}.{ext}')
+        f.save(src)
+
+        # `--convert-to txt:Text` writes <stem>.txt next to the source.
+        # `--headless` avoids opening a GUI; `--norestore` prevents recovery
+        # dialog state from a prior crash from blocking on stdin.
+        result = subprocess.run(
+            [
+                'libreoffice', '--headless', '--norestore',
+                '--convert-to', 'txt:Text',
+                '--outdir', temp_dir, src,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            return jsonify({
+                'error': 'libreoffice conversion failed',
+                'returncode': result.returncode,
+                'stderr': result.stderr.decode('utf-8', 'replace')[:2000],
+            }), 500
+
+        out_path = os.path.join(temp_dir, f'{safe_stem}.txt')
+        if not os.path.exists(out_path):
+            return jsonify({
+                'error': 'libreoffice exited 0 but produced no output file',
+                'stdout': result.stdout.decode('utf-8', 'replace')[:2000],
+                'stderr': result.stderr.decode('utf-8', 'replace')[:2000],
+            }), 500
+
+        with open(out_path, 'r', encoding='utf-8', errors='replace') as out_f:
+            text = out_f.read()
+
+        return jsonify({
+            'text': text,
+            'chars': len(text),
+            'source_format': ext,
+            'source_filename': filename,
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({'error': 'libreoffice timed out after 60s'}), 504
+    except Exception as e:
+        return jsonify({'error': f'docx-to-text failed: {e}'}), 500
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
+
+
 if __name__ == '__main__':
     # Only run the development server if explicitly requested
     import os
