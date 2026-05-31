@@ -14,9 +14,13 @@ RUN apt-get update && \
         libswresample-dev \
         libpostproc-dev \
         libreoffice-core \
-        libreoffice-writer && \
+        libreoffice-writer \
+        poppler-utils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+# poppler-utils provides pdftoppm/pdftocairo which pdf2image shells out to
+# for PDF rasterization (`/pdf-to-pages`). Adds ~25 MB on top of the existing
+# image; cheaper than another sidecar.
 
 # Upgrade pip
 RUN pip install --upgrade pip

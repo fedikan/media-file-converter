@@ -1665,6 +1665,160 @@ def docx_to_text():
             pass
 
 
+# PDF → plain text via pdfplumber (built on pdfminer.six). Mirrors
+# `/docx-to-text` for the format LibreOffice handles poorly. Returns
+# {text, chars, source_format='pdf'} on success.
+#
+# Called from ropewalk-back/src/entities/file/file.service.ts::extractDocumentText
+# at upload time so the chat hot path can inline PDF contents into LLM prompts
+# (same as DOCX). For visual PDFs (no text layer — e.g. scanned artwork) the
+# returned `text` will be empty; the caller should pair this with
+# `/pdf-to-pages` for per-page rasterized PNGs.
+#
+# Page boundaries are preserved as form-feed (\f) separators between page text
+# blocks, so downstream consumers that care about pagination can split on \f.
+@app.route('/pdf-to-text', methods=['POST'])
+def pdf_to_text():
+    from pathlib import Path
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'no file in multipart payload under key "file"'}), 400
+    f = request.files['file']
+    filename = f.filename or 'document.pdf'
+    ext = Path(filename).suffix.lower().lstrip('.')
+    if ext != 'pdf':
+        return jsonify({'error': f'unsupported extension: {ext!r}; this endpoint is PDF-only'}), 400
+
+    temp_dir = tempfile.mkdtemp(prefix='pdf2txt_')
+    try:
+        safe_stem = f'doc_{uuid.uuid4().hex}'
+        src = os.path.join(temp_dir, f'{safe_stem}.pdf')
+        f.save(src)
+
+        # Lazy-import to keep cold-start fast for callers that never touch this
+        # endpoint (e.g. an audio-only request shouldn't pay pdfplumber's
+        # import cost).
+        import pdfplumber
+        try:
+            page_texts = []
+            with pdfplumber.open(src) as pdf:
+                page_count = len(pdf.pages)
+                for page in pdf.pages:
+                    page_texts.append(page.extract_text() or '')
+        except Exception as e:
+            return jsonify({
+                'error': f'pdfplumber conversion failed: {e}',
+                'source_format': 'pdf',
+                'source_filename': filename,
+            }), 500
+
+        # Form-feed separates pages — same convention pdftotext(1) uses.
+        text = '\f'.join(page_texts)
+        return jsonify({
+            'text': text,
+            'chars': len(text),
+            'pageCount': page_count,
+            'source_format': 'pdf',
+            'source_filename': filename,
+        })
+    except Exception as e:
+        return jsonify({'error': f'pdf-to-text failed: {e}'}), 500
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
+
+
+# PDF → per-page PNG byte stream via pdf2image (shells out to poppler-utils).
+# Returns multipart-ish JSON: {pageCount, truncated, pages: [{pageIndex, pngBase64, width, height}]}.
+# pngBase64 is the raw PNG bytes base64-encoded — small enough at default DPI
+# (150) to round-trip through JSON; the caller decodes and uploads each page
+# to S3 as its own File doc.
+#
+# Used by ropewalk-back/src/entities/file/file.service.ts::extractDocumentText
+# at upload time. Hard ceiling of 24 pages protects downstream storage and the
+# 20-slot agent context manifest from runaway PDF uploads — see plan
+# `2026-05-30-document-llm-ingestion.md` §"Manifest hygiene".
+@app.route('/pdf-to-pages', methods=['POST'])
+def pdf_to_pages():
+    from base64 import b64encode
+    from io import BytesIO
+    from pathlib import Path
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'no file in multipart payload under key "file"'}), 400
+    f = request.files['file']
+    filename = f.filename or 'document.pdf'
+    ext = Path(filename).suffix.lower().lstrip('.')
+    if ext != 'pdf':
+        return jsonify({'error': f'unsupported extension: {ext!r}; this endpoint is PDF-only'}), 400
+
+    # Defaults: 8 pages at 150 DPI. Hard ceiling: 24 pages, 200 DPI.
+    try:
+        max_pages = min(int(request.form.get('maxPages', '8')), 24)
+        dpi = min(int(request.form.get('dpi', '150')), 200)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'maxPages and dpi must be integers'}), 400
+    if max_pages < 1:
+        return jsonify({'error': 'maxPages must be >= 1'}), 400
+
+    temp_dir = tempfile.mkdtemp(prefix='pdf2pages_')
+    try:
+        safe_stem = f'doc_{uuid.uuid4().hex}'
+        src = os.path.join(temp_dir, f'{safe_stem}.pdf')
+        f.save(src)
+
+        from pypdf import PdfReader
+        from pdf2image import convert_from_path
+
+        try:
+            total_pages = len(PdfReader(src).pages)
+        except Exception as e:
+            return jsonify({'error': f'pypdf failed to read PDF: {e}'}), 500
+
+        page_limit = min(max_pages, total_pages)
+        try:
+            images = convert_from_path(
+                src,
+                dpi=dpi,
+                first_page=1,
+                last_page=page_limit,
+                fmt='png',
+                output_folder=temp_dir,
+            )
+        except Exception as e:
+            return jsonify({
+                'error': f'pdf2image failed (is poppler-utils installed?): {e}',
+                'pageCount': total_pages,
+            }), 500
+
+        pages = []
+        for i, img in enumerate(images):
+            buf = BytesIO()
+            img.save(buf, format='PNG', optimize=True)
+            pages.append({
+                'pageIndex': i + 1,
+                'pngBase64': b64encode(buf.getvalue()).decode('ascii'),
+                'width': img.width,
+                'height': img.height,
+            })
+
+        return jsonify({
+            'pageCount': total_pages,
+            'truncated': total_pages > page_limit,
+            'pages': pages,
+            'source_filename': filename,
+        })
+    except Exception as e:
+        return jsonify({'error': f'pdf-to-pages failed: {e}'}), 500
+    finally:
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
+
+
 if __name__ == '__main__':
     # Only run the development server if explicitly requested
     import os
