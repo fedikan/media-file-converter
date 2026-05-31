@@ -1,9 +1,12 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
+# Bumped 3.9 → 3.11 for markitdown (`/markitdown` endpoint, replaces the prior
+# `/docx-to-text` + `/pdf-to-text` pair). Markitdown requires Python ≥3.10
+# and pulls cleaner-than-LibreOffice text for DOCX/PPTX/XLSX plus pdfminer-
+# based PDF parsing. Loss of LibreOffice drops ~250MB from the image.
 
-# Install FFmpeg, LibreOffice (for DOCX/DOC/RTF/ODT → text via /docx-to-text),
-# and other system dependencies. libreoffice-core + libreoffice-writer is the
-# minimal slice that handles the four document formats we care about. Adds
-# ~250 MB to the image — acceptable for a service that already ships ffmpeg.
+# System deps: ffmpeg for media endpoints, poppler-utils for PDF rasterization
+# (`/pdf-to-pages` shells out via pdf2image). No LibreOffice — markitdown
+# handles Office formats in-process.
 RUN apt-get update && \
     apt-get install -y ffmpeg \
         libavcodec-extra \
@@ -13,14 +16,9 @@ RUN apt-get update && \
         libswscale-dev \
         libswresample-dev \
         libpostproc-dev \
-        libreoffice-core \
-        libreoffice-writer \
         poppler-utils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-# poppler-utils provides pdftoppm/pdftocairo which pdf2image shells out to
-# for PDF rasterization (`/pdf-to-pages`). Adds ~25 MB on top of the existing
-# image; cheaper than another sidecar.
 
 # Upgrade pip
 RUN pip install --upgrade pip

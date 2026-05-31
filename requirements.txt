@@ -8,15 +8,15 @@ pillow-heif==0.13.0
 opencv-python==4.8.0.76
 gunicorn==21.2.0
 requests==2.31.0
-# PDF handling — pdfplumber (built on pdfminer.six) for the text+table
-# layer, pdf2image for per-page rasterization (shells out to poppler), pypdf
-# for cheap page-count probing without a full parse. See `/pdf-to-text` and
-# `/pdf-to-pages`. We use pdfplumber directly rather than Microsoft's
-# markitdown because markitdown requires Python 3.10+ and the existing
-# ffmpeg/scipy/opencv stack is pinned to python:3.9-slim — pdfplumber is
-# exactly what markitdown calls into for PDFs anyway, so the output is the
-# same minus markitdown's own thin wrapper. DOCX/DOC/RTF/ODT keep going
-# through libreoffice (`/docx-to-text`), which is already proven.
-pdfplumber>=0.11.0
+# Document → markdown text. Microsoft's markitdown handles PDF, DOCX, DOC,
+# PPTX, XLSX, HTML, EPUB, CSV, JSON, XML, TXT, .msg, ZIP archives and more
+# in one library. Requires Python ≥3.10 — we bumped the base image to
+# python:3.11-slim. The `[all]` extra installs every format handler. No LLM
+# client is wired in, so image/audio modes (which require an API key) are
+# silently skipped — callers should keep using `/pdf-to-pages` + image-
+# specific endpoints for those.
+markitdown[all]>=0.1.0
+# pdf2image is kept ONLY for `/pdf-to-pages` per-page raster output. Markitdown
+# does not rasterize PDFs (it converts the text layer to markdown only).
+# Shells out to poppler-utils (installed in the Dockerfile).
 pdf2image>=1.17.0
-pypdf>=4.0.0

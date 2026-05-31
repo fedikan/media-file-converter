@@ -1584,19 +1584,45 @@ def transform_audio():
             pass
 
 
-# DOCX/DOC/RTF/ODT → plain text via headless LibreOffice. Called from
-# ropewalk-back/src/entities/file/file.service.ts::uploadDocument at upload
-# time and from the one-shot backfill script. Returns {text, chars,
-# source_format}; on conversion failure returns 500 with stderr trimmed to
-# 2000 chars. Used to feed actual document content to Claude/OpenAI text
-# models instead of shipping DOCX bytes mislabelled as application/pdf
-# (which providers silently fail to decode → empty generation output).
-@app.route('/docx-to-text', methods=['POST'])
-def docx_to_text():
-    import subprocess
+# Document → Markdown text via Microsoft markitdown. Replaces the prior
+# `/docx-to-text` (LibreOffice) and `/pdf-to-text` (pdfplumber) endpoints with
+# a single route that handles DOCX, DOC, PPTX, XLSX, XLS, PDF, HTML, EPUB,
+# CSV, JSON, XML, TXT and more in-process — no LibreOffice subprocess, no
+# Python 3.9 ceiling.
+#
+# Returns {text, chars, source_format, source_filename}; on conversion
+# failure returns 500 with the error message trimmed to 2000 chars. Used by
+# ropewalk-back/src/entities/file/file.service.ts::extractDocumentText to feed
+# real document content to Claude/OpenAI text models instead of shipping raw
+# bytes mislabelled as application/pdf (which providers silently fail to
+# decode → empty generation output).
+#
+# Note: markitdown emits Markdown, not raw plaintext. Headings, lists, and
+# tables come through as `#`, `-`, `|` syntax — which is *better* for LLM
+# consumption than the prior whitespace-collapsed plaintext. For PDFs, the
+# `pageCount` field comes from markitdown's underlying pdfminer parse when
+# available; visual / image-only PDFs return empty `text` and the caller
+# should pair with `/pdf-to-pages` for per-page rasters.
+@app.route('/markitdown', methods=['POST'])
+def markitdown_route():
     from pathlib import Path
 
-    ALLOWED_EXTS = {'docx', 'doc', 'rtf', 'odt'}
+    # markitdown identifies format by extension via the stream_info hint, so
+    # we validate against the same allow-list both old endpoints accepted plus
+    # the new formats it unlocks. Anything else is rejected explicitly so we
+    # don't accidentally feed an audio/video file through it.
+    ALLOWED_EXTS = {
+        'docx', 'doc', 'rtf', 'odt',           # ex-/docx-to-text
+        'pdf',                                  # ex-/pdf-to-text
+        'pptx', 'ppt',                          # PowerPoint
+        'xlsx', 'xls',                          # Excel
+        'csv', 'tsv',                           # Tabular text
+        'json', 'xml',                          # Structured text
+        'html', 'htm',                          # Web
+        'epub',                                 # Ebook
+        'txt', 'md',                            # Plaintext / markdown
+        'msg',                                  # Outlook email
+    }
 
     if 'file' not in request.files:
         return jsonify({'error': 'no file in multipart payload under key "file"'}), 400
@@ -1609,120 +1635,46 @@ def docx_to_text():
             'allowed': sorted(ALLOWED_EXTS),
         }), 400
 
-    temp_dir = tempfile.mkdtemp(prefix='docx2txt_')
+    temp_dir = tempfile.mkdtemp(prefix='md_')
     try:
-        # LibreOffice picks the output filename based on the input stem, so use
-        # a deterministic basename to avoid encoding surprises with the user's
-        # original filename (Cyrillic / spaces / etc.).
+        # Use a deterministic safe basename to avoid encoding surprises with
+        # the user's original filename (Cyrillic / spaces / etc.). Markitdown
+        # uses the path's suffix for format detection.
         safe_stem = f'doc_{uuid.uuid4().hex}'
         src = os.path.join(temp_dir, f'{safe_stem}.{ext}')
         f.save(src)
 
-        # `--convert-to txt:Text` writes <stem>.txt next to the source.
-        # `--headless` avoids opening a GUI; `--norestore` prevents recovery
-        # dialog state from a prior crash from blocking on stdin.
-        result = subprocess.run(
-            [
-                'libreoffice', '--headless', '--norestore',
-                '--convert-to', 'txt:Text',
-                '--outdir', temp_dir, src,
-            ],
-            capture_output=True,
-            timeout=60,
-        )
-        if result.returncode != 0:
+        # Lazy-import so audio/video callers don't pay the markitdown import
+        # cost on every request — keeps cold start for `/convert` / `/track-meta`
+        # comparable to the pre-migration baseline.
+        from markitdown import MarkItDown
+        md = MarkItDown(enable_plugins=False)
+        try:
+            result = md.convert(src)
+        except Exception as e:
             return jsonify({
-                'error': 'libreoffice conversion failed',
-                'returncode': result.returncode,
-                'stderr': result.stderr.decode('utf-8', 'replace')[:2000],
+                'error': f'markitdown conversion failed: {str(e)[:2000]}',
+                'source_format': ext,
+                'source_filename': filename,
             }), 500
 
-        out_path = os.path.join(temp_dir, f'{safe_stem}.txt')
-        if not os.path.exists(out_path):
-            return jsonify({
-                'error': 'libreoffice exited 0 but produced no output file',
-                'stdout': result.stdout.decode('utf-8', 'replace')[:2000],
-                'stderr': result.stderr.decode('utf-8', 'replace')[:2000],
-            }), 500
-
-        with open(out_path, 'r', encoding='utf-8', errors='replace') as out_f:
-            text = out_f.read()
-
-        return jsonify({
+        text = result.text_content or ''
+        response = {
             'text': text,
             'chars': len(text),
             'source_format': ext,
             'source_filename': filename,
-        })
-    except subprocess.TimeoutExpired:
-        return jsonify({'error': 'libreoffice timed out after 60s'}), 504
+        }
+        # PDFs get a pageCount when markitdown's pdfminer-based path succeeded.
+        # Markitdown's DocumentConverterResult doesn't expose page count on
+        # its public API, so derive from form-feed separators if present
+        # (pdfminer emits \f between pages by default).
+        if ext == 'pdf':
+            page_count = text.count('\f') + 1 if text else 0
+            response['pageCount'] = page_count
+        return jsonify(response)
     except Exception as e:
-        return jsonify({'error': f'docx-to-text failed: {e}'}), 500
-    finally:
-        try:
-            shutil.rmtree(temp_dir)
-        except Exception:
-            pass
-
-
-# PDF → plain text via pdfplumber (built on pdfminer.six). Mirrors
-# `/docx-to-text` for the format LibreOffice handles poorly. Returns
-# {text, chars, source_format='pdf'} on success.
-#
-# Called from ropewalk-back/src/entities/file/file.service.ts::extractDocumentText
-# at upload time so the chat hot path can inline PDF contents into LLM prompts
-# (same as DOCX). For visual PDFs (no text layer — e.g. scanned artwork) the
-# returned `text` will be empty; the caller should pair this with
-# `/pdf-to-pages` for per-page rasterized PNGs.
-#
-# Page boundaries are preserved as form-feed (\f) separators between page text
-# blocks, so downstream consumers that care about pagination can split on \f.
-@app.route('/pdf-to-text', methods=['POST'])
-def pdf_to_text():
-    from pathlib import Path
-
-    if 'file' not in request.files:
-        return jsonify({'error': 'no file in multipart payload under key "file"'}), 400
-    f = request.files['file']
-    filename = f.filename or 'document.pdf'
-    ext = Path(filename).suffix.lower().lstrip('.')
-    if ext != 'pdf':
-        return jsonify({'error': f'unsupported extension: {ext!r}; this endpoint is PDF-only'}), 400
-
-    temp_dir = tempfile.mkdtemp(prefix='pdf2txt_')
-    try:
-        safe_stem = f'doc_{uuid.uuid4().hex}'
-        src = os.path.join(temp_dir, f'{safe_stem}.pdf')
-        f.save(src)
-
-        # Lazy-import to keep cold-start fast for callers that never touch this
-        # endpoint (e.g. an audio-only request shouldn't pay pdfplumber's
-        # import cost).
-        import pdfplumber
-        try:
-            page_texts = []
-            with pdfplumber.open(src) as pdf:
-                page_count = len(pdf.pages)
-                for page in pdf.pages:
-                    page_texts.append(page.extract_text() or '')
-        except Exception as e:
-            return jsonify({
-                'error': f'pdfplumber conversion failed: {e}',
-                'source_format': 'pdf',
-                'source_filename': filename,
-            }), 500
-
-        # Form-feed separates pages — same convention pdftotext(1) uses.
-        text = '\f'.join(page_texts)
-        return jsonify({
-            'text': text,
-            'chars': len(text),
-            'pageCount': page_count,
-            'source_format': 'pdf',
-            'source_filename': filename,
-        })
-    except Exception as e:
-        return jsonify({'error': f'pdf-to-text failed: {e}'}), 500
+        return jsonify({'error': f'markitdown failed: {e}'}), 500
     finally:
         try:
             shutil.rmtree(temp_dir)
@@ -1769,13 +1721,17 @@ def pdf_to_pages():
         src = os.path.join(temp_dir, f'{safe_stem}.pdf')
         f.save(src)
 
-        from pypdf import PdfReader
-        from pdf2image import convert_from_path
+        from pdf2image import convert_from_path, pdfinfo_from_path
 
         try:
-            total_pages = len(PdfReader(src).pages)
+            # pdfinfo_from_path shells out to poppler's `pdfinfo` — already
+            # installed for pdf2image, so no extra Python dep needed (replaced
+            # the prior pypdf probe during the markitdown migration).
+            total_pages = pdfinfo_from_path(src).get('Pages', 0) or 0
+            if not total_pages:
+                raise ValueError('pdfinfo returned no Pages field')
         except Exception as e:
-            return jsonify({'error': f'pypdf failed to read PDF: {e}'}), 500
+            return jsonify({'error': f'pdfinfo failed to read PDF: {e}'}), 500
 
         page_limit = min(max_pages, total_pages)
         try:
