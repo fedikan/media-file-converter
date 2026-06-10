@@ -39,6 +39,12 @@ COPY ropewalk-watermark.png /app/
 COPY og/ /app/og/
 # Note: Add watermark file (ropewalk-watermark.png) if needed for watermark functionality
 
+# Fail the BUILD if the app can't be imported — a module missing from the COPY
+# list above (or a missing dependency) otherwise only surfaces as a gunicorn
+# crash-loop after deploy (2026-06-11: ssrf_guard.py outage took down all
+# upload conversion in prod).
+RUN python -c "import app, og.compose"
+
 # Create a non-root user for security
 RUN useradd --create-home --shell /bin/bash app && \
     chown -R app:app /app
