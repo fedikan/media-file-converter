@@ -14,6 +14,7 @@ import tempfile
 import shutil
 import time
 import requests
+from ssrf_guard import safe_get  # SSRF-safe wrapper for fetching caller-supplied URLs
 register_heif_opener()
 
 app = Flask(__name__)
@@ -364,7 +365,7 @@ def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
         # Download remote file
         try:
             print(f"Starting download of {file_type} from: {url_or_path}")
-            response = requests.get(url_or_path, stream=True, timeout=60)
+            response = safe_get(url_or_path, stream=True, timeout=60)
             response.raise_for_status()
 
             # Check content length
@@ -1387,7 +1388,7 @@ def downscale_image():
 
             # Download the image
             print(f"Downloading image from: {image_url}")
-            response = requests.get(image_url, stream=True, timeout=60)
+            response = safe_get(image_url, stream=True, timeout=60)
             response.raise_for_status()
 
             from urllib.parse import urlparse

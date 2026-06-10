@@ -13,6 +13,7 @@ import io
 import requests
 from PIL import Image, ImageDraw
 
+from ssrf_guard import safe_get  # SSRF-safe fetch (blocks private/metadata targets)
 from . import common as c
 from .i18n import T, plural, model_type_label, DEFAULT_LOCALE
 
@@ -22,7 +23,7 @@ FETCH_TIMEOUT = 5.0
 
 def _fetch_image(url: str):
     try:
-        r = requests.get(url, timeout=FETCH_TIMEOUT, stream=True)
+        r = safe_get(url, timeout=FETCH_TIMEOUT, stream=True)
         r.raise_for_status()
         img = Image.open(io.BytesIO(r.content))
         img.load()
