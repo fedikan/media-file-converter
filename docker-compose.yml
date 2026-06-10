@@ -7,8 +7,13 @@ services:
       context: .
       dockerfile: ./Dockerfile
     restart: always
+    # Bind to loopback only — back & agents reach this service over the shared
+    # docker network as http://aiphoria_audio_converter:5000, so the host port
+    # never needs to be internet-facing. Publishing 0.0.0.0:5000 exposed every
+    # unauthenticated FFmpeg/markitdown endpoint + an SSRF fetch primitive to the
+    # whole internet (SECURITY-AUDIT C5). 127.0.0.1 keeps host-local debugging.
     ports:
-      - 5000:5000
+      - 127.0.0.1:5000:5000
     networks:
       
       - ropewalk_network
