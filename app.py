@@ -426,9 +426,27 @@ def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
         print(f"Using local {file_type} file: {url_or_path} ({file_size} bytes)")
         return url_or_path
 
-def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0):
+def _media_duration_seconds(path):
+    """Probe a media file's container duration; None when unavailable."""
+    try:
+        probe = ffmpeg.probe(path)
+        return float(probe['format']['duration'])
+    except Exception as e:
+        print(f"Could not probe duration of {path}: {e}")
+        return None
+
+def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0,
+                       duration_policy='trimAudio'):
     """
     Merge audio with video using ffmpeg, with optional audio delay.
+
+    duration_policy controls what happens when the audio (plus delay) outlasts
+    the video — without a policy ffmpeg writes the container to the longer
+    stream, leaving a tail with no video frames ("stuck" playback):
+      trimAudio       (default) cap output at the shorter stream (-shortest)
+      freezeLastFrame clone the last video frame until the audio ends (tpad)
+      loopVideo       loop the video from the start until the audio ends
+    Unknown values fall back to trimAudio.
     """
     try:
         # Validate input files exist and are readable
@@ -448,7 +466,13 @@ def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0):
 
         print(f"Merging video ({video_size} bytes) with audio ({audio_size} bytes)")
 
-        video_input = ffmpeg.input(video_path)
+        if duration_policy not in ('trimAudio', 'freezeLastFrame', 'loopVideo'):
+            print(f"Unknown durationPolicy '{duration_policy}', falling back to trimAudio")
+            duration_policy = 'trimAudio'
+
+        video_input = (ffmpeg.input(video_path, stream_loop=-1)
+                       if duration_policy == 'loopVideo'
+                       else ffmpeg.input(video_path))
         audio_input = ffmpeg.input(audio_path)
 
         # Apply audio delay if specified
@@ -456,16 +480,42 @@ def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0):
             delay_seconds = audio_delay_ms / 1000.0
             audio_input = audio_input.filter('adelay', f"{delay_seconds}s|{delay_seconds}s")
 
-        # Combine video and audio
+        video_stream = video_input.video
+        extra_output_args = {}
+        if duration_policy in ('freezeLastFrame', 'loopVideo'):
+            video_dur = _media_duration_seconds(video_path)
+            audio_dur = _media_duration_seconds(audio_path)
+            audio_end = (audio_dur + audio_delay_ms / 1000.0) if audio_dur is not None else None
+            if duration_policy == 'freezeLastFrame':
+                if video_dur is not None and audio_end is not None and audio_end > video_dur:
+                    video_stream = video_stream.filter(
+                        'tpad', stop_mode='clone',
+                        stop_duration=round(audio_end - video_dur, 3))
+                elif audio_end is None:
+                    print("freezeLastFrame: durations unavailable, behaving like trimAudio")
+            else:  # loopVideo
+                # -shortest alone overshoots on a looped input (the video
+                # encoder runs ahead of the muxer's stop decision); cap the
+                # output hard at the audio end instead.
+                if audio_end is not None:
+                    extra_output_args['t'] = round(audio_end, 3)
+                else:
+                    print("loopVideo: audio duration unavailable, behaving like trimAudio")
+
+        # Combine video and audio. -shortest caps the container at the shorter
+        # stream in every policy: trimAudio directly; freezeLastFrame/loopVideo
+        # after the video has been padded/looped to (at least) the audio length.
         output = ffmpeg.output(
-            video_input.video,
+            video_stream,
             audio_input.audio,
             output_path,
             vcodec='libx264',
             acodec='aac',
             audio_bitrate='128k',
             video_bitrate='2M',
-            movflags='faststart'
+            movflags='faststart',
+            shortest=None,
+            **extra_output_args
         )
 
         # Run ffmpeg without quiet mode to see any errors
@@ -505,12 +555,24 @@ def extract_first_frame():
     temp_video_path = f'/tmp/{str(uuid.uuid4())}.mp4'
     file.save(temp_video_path)
 
+    # Optional seek: extract the frame at timestampSec instead of frame 0.
+    try:
+        timestamp_sec = float(request.form.get('timestampSec', 0) or 0)
+    except (TypeError, ValueError):
+        timestamp_sec = 0
+
     try:
         # Open the video file
         cap = cv2.VideoCapture(temp_video_path)
-        
-        # Read the first frame
+        if timestamp_sec > 0:
+            cap.set(cv2.CAP_PROP_POS_MSEC, timestamp_sec * 1000.0)
+
+        # Read the frame at the current position (start when no seek given)
         ret, frame = cap.read()
+        if not ret and timestamp_sec > 0:
+            # Seek past the end — fall back to the first frame.
+            cap.set(cv2.CAP_PROP_POS_MSEC, 0)
+            ret, frame = cap.read()
         if not ret:
             return 'Could not extract frame from video', 400
 
@@ -558,6 +620,7 @@ def merge_audio_with_video_endpoint():
         audio_url = data.get('audioUrl')
         options = data.get('options', {}) or {}
         audio_delay_ms = int(options.get('audioDelayMs', 0) or 0)
+        duration_policy = str(options.get('durationPolicy') or 'trimAudio')
 
         if not video_url:
             return jsonify({'error': 'videoUrl is required'}), 400
@@ -604,7 +667,8 @@ def merge_audio_with_video_endpoint():
         temp_output_path = os.path.join(temp_dir, output_filename)
 
         # Combine (replace video audio with provided audio track)
-        add_audio_to_video(local_video_path, local_audio_path, temp_output_path, audio_delay_ms)
+        add_audio_to_video(local_video_path, local_audio_path, temp_output_path,
+                           audio_delay_ms, duration_policy)
 
         # Double-check the output file exists and is valid (prevent race condition)
         if not os.path.exists(temp_output_path):
@@ -670,6 +734,117 @@ def merge_audio_with_video_endpoint():
     finally:
         # If we returned a streaming response, defer cleanup to the generator's finally
         if temp_dir and os.path.exists(temp_dir) and not will_stream:
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as cleanup_error:
+                print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
+
+
+@app.route('/mix-audio', methods=['POST'])
+def mix_audio():
+    """Combine 2-10 audio tracks into one file.
+
+    JSON body:
+      tracks: [{ url, volume?: float (default 1.0), offsetMs?: int (default 0) }]
+      mode: 'mix' (overlay, default) | 'concat' (sequential; offsets ignored)
+      outputFormat: 'mp3' (default) | 'wav' | 'm4a'
+    """
+    temp_dir = None
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+
+        tracks = data.get('tracks')
+        if not isinstance(tracks, list) or not (2 <= len(tracks) <= 10):
+            return jsonify({'error': 'tracks must be an array of 2-10 items'}), 400
+        mode = str(data.get('mode') or 'mix')
+        if mode not in ('mix', 'concat'):
+            return jsonify({'error': "mode must be 'mix' or 'concat'"}), 400
+        output_format = str(data.get('outputFormat') or 'mp3').lower()
+        codec_map = {
+            'mp3': ('libmp3lame', 'audio/mpeg'),
+            'wav': ('pcm_s16le', 'audio/wav'),
+            'm4a': ('aac', 'audio/mp4'),
+        }
+        if output_format not in codec_map:
+            return jsonify({'error': f'Unsupported outputFormat: {output_format}'}), 400
+        acodec, mime = codec_map[output_format]
+
+        ensure_dirs()
+        if not validate_ffmpeg():
+            return jsonify({'error': 'FFmpeg is not available or not working properly'}), 500
+
+        temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+        local_paths = []
+        volumes = []
+        offsets_ms = []
+        for i, track in enumerate(tracks):
+            url = (track or {}).get('url')
+            if not url:
+                return jsonify({'error': f'tracks[{i}].url is required'}), 400
+            local_paths.append(download_remote_file_if_needed(url, temp_dir, f'audio{i}'))
+            try:
+                volumes.append(float(track.get('volume', 1.0) or 1.0))
+            except (TypeError, ValueError):
+                return jsonify({'error': f'tracks[{i}].volume must be a number'}), 400
+            try:
+                offsets_ms.append(max(0, int(track.get('offsetMs', 0) or 0)))
+            except (TypeError, ValueError):
+                return jsonify({'error': f'tracks[{i}].offsetMs must be an integer'}), 400
+
+        output_path = os.path.join(temp_dir, f'mixed.{output_format}')
+
+        import subprocess
+        cmd = ['ffmpeg', '-y']
+        for p in local_paths:
+            cmd += ['-i', p]
+
+        n = len(local_paths)
+        filters = []
+        labels = []
+        for i in range(n):
+            # Normalize rate/layout first — concat and amix require uniform
+            # stream parameters across all inputs.
+            steps = ['aformat=sample_rates=44100:channel_layouts=stereo',
+                     f'volume={volumes[i]}']
+            if mode == 'mix' and offsets_ms[i] > 0:
+                # adelay needs one value per channel; 'all=1' applies to all
+                steps.append(f'adelay={offsets_ms[i]}:all=1')
+            filters.append(f'[{i}:a]{",".join(steps)}[a{i}]')
+            labels.append(f'[a{i}]')
+        if mode == 'mix':
+            filters.append(
+                f'{"".join(labels)}amix=inputs={n}:duration=longest:normalize=0[out]')
+        else:
+            filters.append(f'{"".join(labels)}concat=n={n}:v=0:a=1[out]')
+
+        cmd += ['-filter_complex', ';'.join(filters), '-map', '[out]', '-c:a', acodec]
+        if output_format == 'mp3':
+            cmd += ['-b:a', '320k']
+        cmd += [output_path]
+
+        result = subprocess.run(cmd, capture_output=True, timeout=300)
+        if result.returncode != 0:
+            err = result.stderr.decode('utf-8', errors='ignore')[-2000:]
+            return jsonify({'error': f'ffmpeg mix failed: {err}'}), 500
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) < 1000:
+            return jsonify({'error': 'Mixed audio output is missing or too small'}), 500
+
+        return send_file(
+            output_path,
+            mimetype=mime,
+            as_attachment=True,
+            download_name=f'mixed.{output_format}'
+        )
+    except Exception as e:
+        print(f"Error in mix_audio: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        # send_file has fully buffered/streamed from the open fd by teardown on
+        # small files; keep parity with other routes and clean the temp dir.
+        if temp_dir and os.path.exists(temp_dir):
             try:
                 shutil.rmtree(temp_dir)
             except Exception as cleanup_error:
@@ -1248,6 +1423,256 @@ def concat_videos():
                     os.remove(temp_file)
             except Exception:
                 pass
+
+@app.route('/concat-n', methods=['POST'])
+def concat_n_videos():
+    """Concatenate 2-10 videos, URL-based (additive alternative to /concat).
+
+    JSON body: { videoUrls: [url-or-local-path, ...] }
+    All clips are normalized to shared specs (min resolution, capped 60fps,
+    silent audio injected where a clip has none) then joined losslessly with
+    the concat demuxer.
+    """
+    import subprocess
+    temp_dir = None
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        video_urls = data.get('videoUrls')
+        if not isinstance(video_urls, list) or not (2 <= len(video_urls) <= 10):
+            return jsonify({'error': 'videoUrls must be an array of 2-10 items'}), 400
+
+        ensure_dirs()
+        if not validate_ffmpeg():
+            return jsonify({'error': 'FFmpeg is not available or not working properly'}), 500
+
+        temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+        local_paths = [download_remote_file_if_needed(u, temp_dir, f'video{i}')
+                       for i, u in enumerate(video_urls)]
+
+        # Probe every clip for specs.
+        infos = []
+        for i, p in enumerate(local_paths):
+            probe = ffmpeg.probe(p)
+            v = next((s for s in probe.get('streams', []) if s.get('codec_type') == 'video'), None)
+            a = next((s for s in probe.get('streams', []) if s.get('codec_type') == 'audio'), None)
+            if v is None:
+                return jsonify({'error': f'videoUrls[{i}] has no video stream'}), 400
+            infos.append({'video': v, 'audio': a,
+                          'duration': float(probe.get('format', {}).get('duration', 0))})
+
+        def parse_fps(fps_str):
+            try:
+                if '/' in str(fps_str):
+                    num, den = map(float, str(fps_str).split('/'))
+                    return num / den if den != 0 else 30.0
+                return float(fps_str)
+            except Exception:
+                return 30.0
+
+        width = min(int(i['video'].get('width', 1920)) for i in infos)
+        height = min(int(i['video'].get('height', 1080)) for i in infos)
+        width -= width % 2
+        height -= height % 2
+        fps = min(max(parse_fps(i['video'].get('r_frame_rate', '30/1')) for i in infos), 60.0)
+        any_audio = any(i['audio'] is not None for i in infos)
+
+        normalized = []
+        for i, p in enumerate(local_paths):
+            out_i = os.path.join(temp_dir, f'norm{i}.mp4')
+            vf = (f'scale={width}:{height}:force_original_aspect_ratio=decrease,'
+                  f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps={fps}')
+            cmd = ['ffmpeg', '-y', '-i', p]
+            if any_audio and infos[i]['audio'] is None:
+                # Inject silence so every normalized clip has an audio stream —
+                # the concat demuxer requires uniform stream layouts.
+                cmd += ['-f', 'lavfi', '-t', str(max(infos[i]['duration'], 0.1)),
+                        '-i', 'anullsrc=r=44100:cl=stereo', '-map', '0:v', '-map', '1:a']
+            elif any_audio:
+                cmd += ['-map', '0:v', '-map', '0:a']
+            else:
+                cmd += ['-map', '0:v']
+            cmd += ['-vf', vf, '-c:v', 'libx264', '-preset', 'medium',
+                    '-pix_fmt', 'yuv420p', '-movflags', 'faststart']
+            if any_audio:
+                cmd += ['-c:a', 'aac', '-ar', '44100', '-b:a', '128k', '-shortest']
+            cmd += [out_i]
+            result = subprocess.run(cmd, capture_output=True, timeout=600)
+            if result.returncode != 0:
+                err = result.stderr.decode('utf-8', errors='ignore')[-1500:]
+                return jsonify({'error': f'normalize failed for clip {i}: {err}'}), 500
+            normalized.append(out_i)
+
+        list_path = os.path.join(temp_dir, 'list.txt')
+        with open(list_path, 'w') as f:
+            for p in normalized:
+                f.write(f"file '{p}'\n")
+        out_path = os.path.join(temp_dir, 'concatenated.mp4')
+        result = subprocess.run(
+            ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path,
+             '-c', 'copy', '-movflags', 'faststart', out_path],
+            capture_output=True, timeout=300)
+        if result.returncode != 0:
+            err = result.stderr.decode('utf-8', errors='ignore')[-1500:]
+            return jsonify({'error': f'concat failed: {err}'}), 500
+        if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+            return jsonify({'error': 'Concatenated output is missing or too small'}), 500
+
+        return send_file(out_path, mimetype='video/mp4', as_attachment=True,
+                         download_name='concatenated.mp4')
+    except Exception as e:
+        print(f"Error in concat_n_videos: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as cleanup_error:
+                print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
+
+
+@app.route('/collage', methods=['POST'])
+def collage_images():
+    """Compose 2-9 images into a collage.
+
+    JSON body:
+      images: [url-or-local-path, ...]
+      layout: 'grid' (default) | 'horizontal' | 'vertical'
+      gap: int px between cells (default 8)
+      background: hex color (default '#ffffff')
+      cellSize: int px for the long edge of each cell (default 512)
+    """
+    temp_dir = None
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        images = data.get('images')
+        if not isinstance(images, list) or not (2 <= len(images) <= 9):
+            return jsonify({'error': 'images must be an array of 2-9 items'}), 400
+        layout = str(data.get('layout') or 'grid')
+        if layout not in ('grid', 'horizontal', 'vertical'):
+            return jsonify({'error': "layout must be 'grid', 'horizontal' or 'vertical'"}), 400
+        gap = max(0, int(data.get('gap', 8) or 0))
+        background = str(data.get('background') or '#ffffff')
+        cell = max(64, min(2048, int(data.get('cellSize', 512) or 512)))
+
+        temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+        pil_images = []
+        for i, u in enumerate(images):
+            path = download_remote_file_if_needed(u, temp_dir, f'image{i}')
+            img = Image.open(path)
+            try:
+                from PIL import ImageOps
+                img = ImageOps.exif_transpose(img)
+            except Exception:
+                pass
+            img = img.convert('RGB')
+            img.thumbnail((cell, cell), Image.LANCZOS)
+            pil_images.append(img)
+
+        n = len(pil_images)
+        if layout == 'horizontal':
+            cols, rows = n, 1
+        elif layout == 'vertical':
+            cols, rows = 1, n
+        else:
+            cols = int(np.ceil(np.sqrt(n)))
+            rows = int(np.ceil(n / cols))
+
+        # Uniform cell box; images are centered inside their cell.
+        cell_w = max(im.width for im in pil_images)
+        cell_h = max(im.height for im in pil_images)
+        canvas_w = cols * cell_w + (cols + 1) * gap
+        canvas_h = rows * cell_h + (rows + 1) * gap
+        canvas = Image.new('RGB', (canvas_w, canvas_h), background)
+        for idx, im in enumerate(pil_images):
+            r, c = divmod(idx, cols)
+            x = gap + c * (cell_w + gap) + (cell_w - im.width) // 2
+            y = gap + r * (cell_h + gap) + (cell_h - im.height) // 2
+            canvas.paste(im, (x, y))
+
+        img_io = io.BytesIO()
+        canvas.save(img_io, 'WEBP', quality=92)
+        img_io.seek(0)
+        return send_file(img_io, mimetype='image/webp', as_attachment=True,
+                         download_name='collage.webp')
+    except Exception as e:
+        print(f"Error in collage_images: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as cleanup_error:
+                print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
+
+
+@app.route('/video-to-gif', methods=['POST'])
+def video_to_gif():
+    """Convert a video (or a segment of it) to an optimized GIF.
+
+    JSON body: { videoUrl, fps?: int (default 12), maxWidth?: int (default 480),
+                 startSec?: float, durationSec?: float }
+    Uses the two-pass palettegen/paletteuse pipeline for quality.
+    """
+    import subprocess
+    temp_dir = None
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        video_url = data.get('videoUrl')
+        if not video_url:
+            return jsonify({'error': 'videoUrl is required'}), 400
+        fps = max(1, min(30, int(data.get('fps', 12) or 12)))
+        max_width = max(64, min(960, int(data.get('maxWidth', 480) or 480)))
+        start_sec = float(data.get('startSec', 0) or 0)
+        duration_sec = data.get('durationSec')
+
+        ensure_dirs()
+        if not validate_ffmpeg():
+            return jsonify({'error': 'FFmpeg is not available or not working properly'}), 500
+
+        temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
+        local_path = download_remote_file_if_needed(video_url, temp_dir, 'video')
+        palette = os.path.join(temp_dir, 'palette.png')
+        out_path = os.path.join(temp_dir, 'out.gif')
+
+        seek = ['-ss', str(start_sec)] if start_sec > 0 else []
+        clip = ['-t', str(float(duration_sec))] if duration_sec else []
+        vf = f'fps={fps},scale={max_width}:-2:flags=lanczos'
+
+        r1 = subprocess.run(
+            ['ffmpeg', '-y', *seek, '-i', local_path, *clip,
+             '-vf', f'{vf},palettegen', palette],
+            capture_output=True, timeout=300)
+        if r1.returncode != 0:
+            err = r1.stderr.decode('utf-8', errors='ignore')[-1500:]
+            return jsonify({'error': f'palettegen failed: {err}'}), 500
+        r2 = subprocess.run(
+            ['ffmpeg', '-y', *seek, '-i', local_path, '-i', palette, *clip,
+             '-lavfi', f'{vf}[x];[x][1:v]paletteuse', out_path],
+            capture_output=True, timeout=300)
+        if r2.returncode != 0:
+            err = r2.stderr.decode('utf-8', errors='ignore')[-1500:]
+            return jsonify({'error': f'gif encode failed: {err}'}), 500
+        if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+            return jsonify({'error': 'GIF output is missing or too small'}), 500
+
+        return send_file(out_path, mimetype='image/gif', as_attachment=True,
+                         download_name='converted.gif')
+    except Exception as e:
+        print(f"Error in video_to_gif: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as cleanup_error:
+                print(f"Failed to clean up temp directory {temp_dir}: {cleanup_error}")
+
 
 @app.route('/analyze-video', methods=['POST'])
 def analyze_video():
