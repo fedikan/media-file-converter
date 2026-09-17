@@ -26,5 +26,5 @@ CONTAINER=converter-smoke-test BASE_URL=http://127.0.0.1:5999 ./tests/smoke.sh
 - `/mix-audio` — overlay/concat 2-10 audio tracks (per-track volume/offsetMs).
 - `/concat-n` — URL-based N-video concat (normalize → concat demuxer). The older pairwise multipart `/concat` remains.
 - `/collage`, `/video-to-gif`, `/extract-first-frame` (`timestampSec` optional), `/extract-last-frame`.
-- `/transform-video`, `/transform-audio` — re-encode/downscale/trim; transform-audio also extracts audio from video (`-vn`).
+- `/transform-video`, `/transform-audio` — re-encode/downscale/trim; `start_sec` (input-side `-ss`) skips the head of the file and `max_duration` caps what follows; transform-audio also extracts audio from video (`-vn`). Skipping into a track is `start_sec` here — `audioDelayMs` on `/merge-audio` is the opposite (it inserts leading silence).
 - All caller-supplied URLs go through `ssrf_guard.safe_get` — never bypass it.
