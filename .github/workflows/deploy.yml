@@ -4,6 +4,10 @@ on:
     branches:
       - master
 
+# The deploy job authenticates to the prod host with SSH secrets and never
+# uses GITHUB_TOKEN — deny it every scope.
+permissions: {}
+
 env:
   GO_TO_FOLDER_SCRIPT:  cd ~/aiphoria/audio-converter
   BUILD_SCRIPT: docker-compose up -d --build --force-recreate
@@ -15,7 +19,7 @@ jobs:
 
     steps:
       - name: Deploy to Server
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.HOST }}
           port: ${{ secrets.PORT }}

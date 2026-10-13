@@ -474,11 +474,16 @@ def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0,
                        if duration_policy == 'loopVideo'
                        else ffmpeg.input(video_path))
         audio_input = ffmpeg.input(audio_path)
+        # Select the audio stream BEFORE filtering: a filter node has no
+        # named 'a' pad, so `filtered.audio` later asked ffmpeg for a
+        # non-existent label ("Output with label 's0:a' does not exist") and
+        # every merge with audioDelayMs != 0 failed.
+        audio_stream = audio_input.audio
 
         # Apply audio delay if specified
         if audio_delay_ms != 0:
             delay_seconds = audio_delay_ms / 1000.0
-            audio_input = audio_input.filter('adelay', f"{delay_seconds}s|{delay_seconds}s")
+            audio_stream = audio_stream.filter('adelay', f"{delay_seconds}s|{delay_seconds}s")
 
         video_stream = video_input.video
         extra_output_args = {}
@@ -507,7 +512,7 @@ def add_audio_to_video(video_path, audio_path, output_path, audio_delay_ms=0,
         # after the video has been padded/looped to (at least) the audio length.
         output = ffmpeg.output(
             video_stream,
-            audio_input.audio,
+            audio_stream,
             output_path,
             vcodec='libx264',
             acodec='aac',
@@ -1881,11 +1886,22 @@ def downscale_image():
 # intentionally simple wrappers around ffmpeg.
 # ---------------------------------------------------------------------------
 
+def _seek_args(start_sec):
+    """`-ss` placed BEFORE `-i`: fast input seeking that, combined with the
+    re-encode every transform route does, is frame/sample accurate. Skipping
+    the head of a track is the opposite of `adelay` (which inserts silence)."""
+    try:
+        start = float(start_sec or 0)
+    except (TypeError, ValueError):
+        start = 0.0
+    return ['-ss', str(start)] if start > 0 else []
+
+
 def _ffmpeg_to(input_path, output_path, *, vf=None, acodec=None, vcodec=None,
-               max_duration=None, output_format=None):
+               max_duration=None, output_format=None, start_sec=None):
     """Run ffmpeg with consistent flags. Raises CalledProcessError on failure."""
     import subprocess
-    cmd = ['ffmpeg', '-y', '-i', input_path]
+    cmd = ['ffmpeg', '-y', *_seek_args(start_sec), '-i', input_path]
     if max_duration:
         cmd += ['-t', str(int(max_duration))]
     if vf:
@@ -1909,7 +1925,8 @@ def transform_video():
       file:           required, the source video upload
       output_format:  optional (default 'mp4'); one of mp4|webm|mov|m4v
       max_width:      optional int; downscale (preserve aspect) if larger
-      max_duration:   optional int seconds; trim if longer
+      start_sec:      optional float seconds; drop everything before this point
+      max_duration:   optional int seconds; keep at most this much (after start_sec)
     """
     if 'file' not in request.files:
         return 'No file part', 400
@@ -1920,6 +1937,7 @@ def transform_video():
     output_format = (request.form.get('output_format') or 'mp4').lower()
     max_width = request.form.get('max_width', type=int)
     max_duration = request.form.get('max_duration', type=int)
+    start_sec = request.form.get('start_sec', type=float)
 
     temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
     try:
@@ -1942,6 +1960,7 @@ def transform_video():
             in_path, out_path,
             vf=vf, vcodec=vcodec, acodec=acodec,
             max_duration=max_duration, output_format=output_format,
+            start_sec=start_sec,
         )
         mime = {'mp4': 'video/mp4', 'mov': 'video/quicktime', 'webm': 'video/webm', 'm4v': 'video/mp4'}.get(output_format, 'video/mp4')
         return send_file(out_path, mimetype=mime, as_attachment=True, download_name=f'transformed.{output_format}')
@@ -1961,7 +1980,9 @@ def transform_audio():
     Form fields:
       file:           required, the source audio/video upload
       output_format:  optional (default 'mp3'); one of mp3|wav|m4a|ogg|flac
-      max_duration:   optional int seconds; trim if longer
+      start_sec:      optional float seconds; drop everything before this point
+                      (start "further into" the track — this is NOT a delay)
+      max_duration:   optional int seconds; keep at most this much (after start_sec)
     """
     if 'file' not in request.files:
         return 'No file part', 400
@@ -1971,6 +1992,7 @@ def transform_audio():
 
     output_format = (request.form.get('output_format') or 'mp3').lower()
     max_duration = request.form.get('max_duration', type=int)
+    start_sec = request.form.get('start_sec', type=float)
 
     temp_dir = tempfile.mkdtemp(dir=CONFIG['temp_dir'])
     try:
@@ -1992,7 +2014,7 @@ def transform_audio():
         # -vn drops video so this works for both audio uploads and video uploads
         # where the user wants the audio track only.
         import subprocess
-        cmd = ['ffmpeg', '-y', '-i', in_path, '-vn']
+        cmd = ['ffmpeg', '-y', *_seek_args(start_sec), '-i', in_path, '-vn']
         if max_duration:
             cmd += ['-t', str(int(max_duration))]
         cmd += ['-c:a', acodec]

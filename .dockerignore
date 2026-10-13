@@ -1,0 +1,17 @@
+# Keep secrets, VCS metadata, caches and local cruft out of the build context
+# (Dockerfile.dev does `COPY . /app/`, so without this they'd land in the image).
+.env
+.env.*
+.git
+.gitignore
+.github
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+.DS_Store
+*.log

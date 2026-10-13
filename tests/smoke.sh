@@ -121,6 +121,31 @@ curl -sS -X POST "$BASE_URL/transform-audio" \
   -o "$WORK/ta.wav"
 check_ok "transform-audio" "$WORK/ta.wav"
 check_close "transform-audio duration" "$(dur "$WORK/ta.wav")" 4
+# start_sec skips INTO the track (no leading silence): 10s source, start at 8 → 2s left
+curl -sS -X POST "$BASE_URL/transform-audio" \
+  -F "file=@$WORK/audio10s.mp3" -F "output_format=wav" -F "start_sec=8" \
+  -o "$WORK/ta-start.wav"
+check_ok "transform-audio [start_sec=8]" "$WORK/ta-start.wav"
+check_close "transform-audio start_sec duration" "$(dur "$WORK/ta-start.wav")" 2
+# start_sec + max_duration = a window: 10s source, start 3, keep 4 → 4s
+curl -sS -X POST "$BASE_URL/transform-audio" \
+  -F "file=@$WORK/audio10s.mp3" -F "output_format=wav" -F "start_sec=3" -F "max_duration=4" \
+  -o "$WORK/ta-window.wav"
+check_ok "transform-audio [start_sec=3,max_duration=4]" "$WORK/ta-window.wav"
+check_close "transform-audio window duration" "$(dur "$WORK/ta-window.wav")" 4
+# the window must carry signal from the first sample (a delay would show silence)
+python3 - "$WORK/ta-window.wav" <<'PYEOF' && { echo "PASS transform-audio window has audio at t=0"; PASS=$((PASS+1)); } || { echo "FAIL transform-audio window starts silent"; FAIL=$((FAIL+1)); }
+import sys, wave, struct
+w = wave.open(sys.argv[1]); n = min(w.getframerate() // 2, w.getnframes())
+frames = w.readframes(n); w.close()
+samples = struct.unpack('<%dh' % (len(frames) // 2), frames)
+sys.exit(0 if max(abs(s) for s in samples) > 1000 else 1)
+PYEOF
+curl -sS -X POST "$BASE_URL/transform-video" \
+  -F "file=@$WORK/video5s.mp4" -F "output_format=mp4" -F "start_sec=3" \
+  -o "$WORK/tv-start.mp4"
+check_ok "transform-video [start_sec=3]" "$WORK/tv-start.mp4"
+check_close "transform-video start_sec duration" "$(dur "$WORK/tv-start.mp4")" 2
 
 echo "== regression: existing endpoints still up"
 HEALTH=$(curl -sS "$BASE_URL/health" | head -c 100)
