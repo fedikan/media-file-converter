@@ -1,1 +1,14 @@
 __pycache__/
+*.py[cod]
+
+# Node is not used by this service (Flask + ffmpeg only; the Dockerfile never
+# copies node_modules). Never commit installed dependencies.
+node_modules/
+
+.DS_Store
+.env
+.env.*
+.venv/
+venv/
+.pytest_cache/
+*.log
