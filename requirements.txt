@@ -4,7 +4,7 @@ ffmpeg-python==0.2.0
 numpy==1.24.3
 scipy==1.11.1
 Pillow==10.0.0
-pillow-heif==0.13.0
+pillow-heif==1.8.0
 opencv-python==4.8.0.76
 gunicorn==21.2.0
 requests==2.31.0
