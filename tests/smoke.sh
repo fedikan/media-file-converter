@@ -75,6 +75,19 @@ curl -sS -X POST "$BASE_URL/mix-audio" -H 'Content-Type: application/json' \
 check_ok "mix-audio [mix]" "$WORK/mixed.mp3"
 check_close "mix-audio [mix] duration" "$(dur "$WORK/mixed.mp3")" 10
 
+echo "== /concat (pairwise multipart) with audio: 5s + 5s -> 10s"
+# Both clips carry audio: the path the agents' extend-video uses (Pruna /
+# Pyramid Flow clips have AAC). It raised "too many values to unpack" until
+# 2026-10-25, so extends delivered only the new segment.
+ffmpeg -y -loglevel error -f lavfi -i "testsrc=duration=5:size=320x240:rate=24" -f lavfi -i "sine=frequency=440:duration=5" \
+  -shortest -pix_fmt yuv420p -c:a aac "$WORK/av5s.mp4"
+curl -sS -X POST "$BASE_URL/concat" -F file1=@"$WORK/av5s.mp4" -F file2=@"$WORK/av5s.mp4" -o "$WORK/concat-av.mp4"
+check_ok "concat [audio]" "$WORK/concat-av.mp4"
+check_close "concat [audio] duration" "$(dur "$WORK/concat-av.mp4")" 10
+curl -sS -X POST "$BASE_URL/concat" -F file1=@"$WORK/video5s.mp4" -F file2=@"$WORK/video5s.mp4" -o "$WORK/concat-v.mp4"
+check_ok "concat [video only]" "$WORK/concat-v.mp4"
+check_close "concat [video only] duration" "$(dur "$WORK/concat-v.mp4")" 10
+
 echo "== /mix-audio concat mode (10s + 3s -> 13s)"
 curl -sS -X POST "$BASE_URL/mix-audio" -H 'Content-Type: application/json' \
   -d "{\"tracks\":[{\"url\":\"$FIX/audio10s.mp3\"},{\"url\":\"$FIX/audio3s.mp3\"}],\"mode\":\"concat\"}" \
