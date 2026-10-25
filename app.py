@@ -1398,7 +1398,12 @@ def concat_videos():
             v1, a1 = input1.video, input1.audio
             v2, a2 = input2.video, input2.audio
             
-            joined_video, joined_audio = ffmpeg.concat(v1, a1, v2, a2, v=1, a=1).node
+            # A FilterNode is indexed, not unpacked: `a, b = node` iterates it
+            # and raised "too many values to unpack (expected 2)" on every
+            # pair of clips WITH audio — the agents' extend-video then
+            # delivered only the new segment (Ropewalk prod, 2026-10-25).
+            joined = ffmpeg.concat(v1, a1, v2, a2, v=1, a=1).node
+            joined_video, joined_audio = joined[0], joined[1]
             
             stream = ffmpeg.output(
                 joined_video, joined_audio, out,
