@@ -4,6 +4,7 @@
 # URLs, but the download helper accepts container-local paths), then curls each
 # endpoint and validates output durations with ffprobe.
 # Usage:
+#   (start the container with -e CONVERTER_ALLOW_LOCAL_PATHS=1: fixtures are container-local paths)
 #   CONTAINER=<container-name> BASE_URL=http://127.0.0.1:5000 ./tests/smoke.sh
 set -uo pipefail
 

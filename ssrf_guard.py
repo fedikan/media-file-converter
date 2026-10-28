@@ -8,6 +8,11 @@ services, the WG-peered boxes) to exfiltrate internal data. `safe_get` resolves
 the host and refuses any URL that maps to a private/loopback/link-local/reserved
 address, re-validating on every redirect hop.
 
+The connection is pinned to the address that was checked (no second DNS
+lookup by requests), so a host that answers with a public IP for the check and
+127.0.0.1 for the connect (DNS rebinding) cannot slip through. TLS still uses
+the real hostname for SNI and certificate verification.
+
 Public URLs (DO Spaces / replicate.delivery / normal CDNs) resolve to public IPs
 and pass unchanged, so legitimate fetches are NOT blocked.
 """
@@ -16,6 +21,9 @@ import socket
 from urllib.parse import urlparse, urljoin
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.connection import HTTPConnection, HTTPSConnection
+from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 
 
 def _is_public_ip(ip_str):
@@ -37,7 +45,14 @@ def _is_public_ip(ip_str):
 
 def assert_public_url(url):
     """Raise ValueError unless `url` is an http(s) URL whose host resolves only
-    to public addresses."""
+    to public addresses. Returns the URL; see `resolve_public` for the address."""
+    resolve_public(url)
+    return url
+
+
+def resolve_public(url):
+    """Validate `url` like assert_public_url and return one checked address to
+    connect to."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ValueError("SSRF_BLOCKED: only http(s) URLs are allowed")
@@ -55,7 +70,35 @@ def assert_public_url(url):
     for addr in addrs:
         if not _is_public_ip(addr):
             raise ValueError(f"SSRF_BLOCKED: {host} resolves to non-public address {addr}")
-    return url
+    return sorted(addrs)[0]
+
+
+def _pinned_adapter(ip):
+    """A requests adapter whose connections dial `ip` whatever the URL's host
+    resolves to now. urllib3 dials `_dns_host` and keeps `host` for the Host
+    header, SNI and certificate checks."""
+    class PinnedHTTPConnection(HTTPConnection):
+        def _new_conn(self):
+            self._dns_host = ip
+            return super()._new_conn()
+
+    class PinnedHTTPSConnection(HTTPSConnection):
+        def _new_conn(self):
+            self._dns_host = ip
+            return super()._new_conn()
+
+    class PinnedHTTPPool(HTTPConnectionPool):
+        ConnectionCls = PinnedHTTPConnection
+
+    class PinnedHTTPSPool(HTTPSConnectionPool):
+        ConnectionCls = PinnedHTTPSConnection
+
+    class PinnedAdapter(HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            super().init_poolmanager(*args, **kwargs)
+            self.poolmanager.pool_classes_by_scheme = {'http': PinnedHTTPPool, 'https': PinnedHTTPSPool}
+
+    return PinnedAdapter()
 
 
 def safe_get(url, max_redirects=5, **kwargs):
@@ -65,8 +108,13 @@ def safe_get(url, max_redirects=5, **kwargs):
     kwargs.pop("allow_redirects", None)
     current = url
     for _ in range(max_redirects + 1):
-        assert_public_url(current)
-        resp = requests.get(current, allow_redirects=False, **kwargs)
+        ip = resolve_public(current)
+        session = requests.Session()
+        session.trust_env = False  # never via HTTP(S)_PROXY: the proxy would resolve the host itself
+        adapter = _pinned_adapter(ip)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        resp = session.get(current, allow_redirects=False, **kwargs)
         if resp.status_code in (301, 302, 303, 307, 308) and "location" in resp.headers:
             nxt = urljoin(current, resp.headers["location"])
             resp.close()
@@ -74,3 +122,27 @@ def safe_get(url, max_redirects=5, **kwargs):
             continue
         return resp
     raise ValueError("SSRF_BLOCKED: too many redirects")
+
+
+# Extensions a downloaded file may be saved under (ffmpeg picks demuxers by
+# extension as well as content).
+SAFE_MEDIA_EXTENSIONS = {
+    '.mp4', '.mov', '.m4v', '.webm', '.mkv', '.avi', '.gif', '.mpeg', '.mpg', '.ts',
+    '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.flac', '.weba',
+    '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff', '.heic', '.avif',
+}
+
+# Text formats ffmpeg treats as pointers to other inputs (HLS/M3U playlists,
+# ffconcat lists, SDP, DASH/ISM manifests, XSPF/PLS playlists).
+_REFERENCE_MARKERS = (b'#extm3u', b'#ext-x-', b'ffconcat', b'file ', b'v=0', b'<?xml', b'<mpd', b'<smil', b'[playlist]', b'<playlist')
+
+
+def is_reference_container(path):
+    """True when the file is a playlist / reference list rather than media."""
+    try:
+        with open(path, 'rb') as f:
+            head = f.read(4096)
+    except OSError:
+        return True
+    text = head.lstrip(b'\xef\xbb\xbf \t\r\n').lower()
+    return any(text.startswith(m) for m in _REFERENCE_MARKERS) or b'#extm3u' in head.lower()
