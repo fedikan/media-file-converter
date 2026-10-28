@@ -10,7 +10,7 @@ scipy==1.11.1
 Pillow==11.3.0
 pillow-heif==1.1.1
 opencv-python-headless==4.11.0.86
-gunicorn==21.2.0
+gunicorn==26.2.0
 requests==2.31.0
 # Document → markdown text. Microsoft's markitdown handles PDF, DOCX, DOC,
 # PPTX, XLSX, HTML, EPUB, CSV, JSON, XML, TXT, .msg, ZIP archives and more
