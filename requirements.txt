@@ -8,7 +8,7 @@ scipy==1.11.1
 # background_url). Headless OpenCV: no GUI is used (no imshow/highgui), and it
 # drops the X11/Qt libraries.
 Pillow==11.3.0
-pillow-heif==1.1.1
+pillow-heif==1.8.1
 opencv-python-headless==4.11.0.86
 gunicorn==21.2.0
 requests==2.31.0
