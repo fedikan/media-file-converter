@@ -22,6 +22,8 @@ docker run -d --name converter-smoke-test -e CONVERTER_ALLOW_LOCAL_PATHS=1 -p 12
 CONTAINER=converter-smoke-test BASE_URL=http://127.0.0.1:5999 ./tests/smoke.sh
 ```
 
+`tests/test_app_upload.py` — image stack + upload cap (needs requirements.txt; markitdown is lazy-imported): Pillow's libwebp ≥ 1.3.2 and OpenCV ≥ 4.8.1 (CVE-2023-4863 — never pin Pillow/OpenCV back below that), WebP/HEIF/OpenCV round trips, `/convert-image`, and the 413 from `MAX_CONTENT_LENGTH` (`CONVERTER_MAX_CONTENT_MB`, default 512 — just above the host nginx 500M upload cap that bounds back's forwarded uploads; raise it, don't remove it, if a caller needs more).
+
 ## Key routes (agent-facing)
 
 - `/merge-audio` — video+audio mux; `options.durationPolicy`: `trimAudio` (default), `freezeLastFrame`, `loopVideo`; `options.audioDelayMs`.

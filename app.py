@@ -19,6 +19,19 @@ register_heif_opener()
 
 app = Flask(__name__)
 
+# Request body cap (Werkzeug answers 413 before a route reads the body). The
+# largest legit caller is a user upload forwarded by ropewalk-back
+# (/transform-video, /extract-*-frame, /concat …), bounded by the host nginx
+# client_max_body_size 500M, so the default sits just above it. Override with
+# CONVERTER_MAX_CONTENT_MB.
+MAX_CONTENT_MB = int(os.environ.get('CONVERTER_MAX_CONTENT_MB', '512'))
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_MB * 1024 * 1024
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return jsonify({'error': f'Request body exceeds {MAX_CONTENT_MB} MB'}), 413
+
 from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app)
 
