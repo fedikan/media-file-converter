@@ -14,7 +14,7 @@ import tempfile
 import shutil
 import time
 import requests
-from ssrf_guard import safe_get  # SSRF-safe wrapper for fetching caller-supplied URLs
+from ssrf_guard import safe_get, is_reference_container, SAFE_MEDIA_EXTENSIONS  # SSRF-safe fetch + media input checks
 register_heif_opener()
 
 app = Flask(__name__)
@@ -356,7 +356,7 @@ def validate_ffmpeg():
         print(f"FFmpeg validation failed: {e}")
         return False
 
-def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
+def download_remote_file_if_needed(url_or_path, temp_dir, file_type, allow_local=None):
     """
     Download a remote file if URL is provided, otherwise return the local path.
     Returns the local path to the file.
@@ -376,8 +376,12 @@ def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
                     raise Exception(f"Remote file is too small ({content_length} bytes)")
                 print(f"Expected file size: {content_length} bytes")
 
-            # Determine file extension from content-type or URL
-            content_type = response.headers.get('content-type', '')
+            # Determine file extension from content-type or URL. Only plain
+            # media extensions: a playlist / concat / SDP name (.m3u8, .txt…)
+            # would make ffmpeg fetch the URLs listed inside it, unguarded.
+            content_type = response.headers.get('content-type', '').lower()
+            if 'mpegurl' in content_type or 'sdp' in content_type:
+                raise Exception(f"Unsupported {file_type} content type: {content_type}")
             if 'video' in content_type:
                 ext = '.mp4'
             elif 'audio' in content_type:
@@ -386,7 +390,9 @@ def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
                 # Extract extension from URL
                 from urllib.parse import urlparse
                 parsed_url = urlparse(url_or_path)
-                ext = os.path.splitext(parsed_url.path)[1] or '.mp4'
+                ext = os.path.splitext(parsed_url.path)[1].lower()
+                if ext not in SAFE_MEDIA_EXTENSIONS:
+                    ext = '.mp4'
 
             temp_filename = f"{file_type}_{uuid.uuid4()}{ext}"
             temp_path = os.path.join(temp_dir, temp_filename)
@@ -405,6 +411,10 @@ def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
             if downloaded_size < 1000:
                 raise Exception(f"Downloaded file is too small ({downloaded_size} bytes)")
 
+            # ffmpeg detects HLS / concat / SDP / playlists by content too.
+            if is_reference_container(temp_path):
+                raise Exception(f"Unsupported {file_type}: playlists and reference files are not accepted")
+
             print(f"Successfully downloaded {file_type}: {temp_path} ({downloaded_size} bytes)")
             return temp_path
 
@@ -415,6 +425,13 @@ def download_remote_file_if_needed(url_or_path, temp_dir, file_type):
         except Exception as e:
             raise Exception(f"Failed to download {file_type} from {url_or_path}: {str(e)}")
     else:
+        # Every caller passes a request value: a bare path here would let any
+        # caller on the network make ffmpeg read files off this box.
+        # Only the smoke-test container opts in (CONVERTER_ALLOW_LOCAL_PATHS=1).
+        if allow_local is None:
+            allow_local = os.environ.get('CONVERTER_ALLOW_LOCAL_PATHS') == '1'
+        if not allow_local:
+            raise Exception(f"{file_type} must be an http(s) URL")
         # Local file path - validate it exists
         if not os.path.exists(url_or_path):
             raise Exception(f"Local {file_type} file does not exist: {url_or_path}")

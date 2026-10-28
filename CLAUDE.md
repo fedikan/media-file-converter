@@ -12,11 +12,13 @@ Push to `master` → GitHub Action `AIPHORIA_CONVERTER_DEPLOY` SSHes to the prod
 
 ## Testing
 
-`tests/smoke.sh` — end-to-end suite (fixtures generated with local ffmpeg, `docker cp`'d into the container because the SSRF guard correctly blocks private-network URLs; URL-taking endpoints accept container-local paths).
+`tests/smoke.sh` — end-to-end suite (fixtures generated with local ffmpeg, `docker cp`'d into the container because the SSRF guard correctly blocks private-network URLs). URL-taking endpoints accept container-local paths ONLY with `CONVERTER_ALLOW_LOCAL_PATHS=1` (smoke container only — never in prod, it would let any caller make ffmpeg read files off the box).
+
+`tests/test_ssrf_guard.py` — unit tests for `ssrf_guard.py` (`python -m unittest discover -s tests`, needs `requests`): private/scheme refusal, the connection pinned to the checked IP (DNS rebinding), playlist / concat / SDP detection. Downloads are refused when the bytes are a playlist or reference list, and saved only under plain media extensions, because ffmpeg follows the URLs inside those with no guard.
 
 ```bash
 docker build -t converter-smoke .
-docker run -d --name converter-smoke-test -p 127.0.0.1:5999:5000 converter-smoke
+docker run -d --name converter-smoke-test -e CONVERTER_ALLOW_LOCAL_PATHS=1 -p 127.0.0.1:5999:5000 converter-smoke
 CONTAINER=converter-smoke-test BASE_URL=http://127.0.0.1:5999 ./tests/smoke.sh
 ```
 
