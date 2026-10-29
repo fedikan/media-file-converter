@@ -19,7 +19,7 @@ requests==2.31.0
 # client is wired in, so image/audio modes (which require an API key) are
 # silently skipped — callers should keep using `/pdf-to-pages` + image-
 # specific endpoints for those.
-markitdown[all]>=0.1.0
+markitdown[all]>=0.1.8
 # pdf2image is kept ONLY for `/pdf-to-pages` per-page raster output. Markitdown
 # does not rasterize PDFs (it converts the text layer to markdown only).
 # Shells out to poppler-utils (installed in the Dockerfile).
