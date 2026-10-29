@@ -24,6 +24,9 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.connection import HTTPConnection, HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
+from urllib3.util import connection as urllib3_connection_util
+from socket import timeout as SocketTimeout
 
 
 def _is_public_ip(ip_str):
@@ -73,19 +76,37 @@ def resolve_public(url):
     return sorted(addrs)[0]
 
 
+def _dial(conn, ip):
+    """Open the TCP socket to `ip` for urllib3 connection `conn`. `conn._dns_host`
+    is left alone: urllib3's `host` property (Host header, TLS SNI, certificate
+    hostname check) reads it, so overwriting it sent the bare IP as SNI and
+    Cloudflare-fronted CDNs refused the handshake (prod 2026-10-28)."""
+    try:
+        sock = urllib3_connection_util.create_connection(
+            (ip, conn.port),
+            conn.timeout,
+            source_address=conn.source_address,
+            socket_options=conn.socket_options,
+        )
+    except SocketTimeout as e:
+        raise ConnectTimeoutError(
+            conn, f"Connection to {conn.host} timed out. (connect timeout={conn.timeout})") from e
+    except OSError as e:
+        raise NewConnectionError(conn, f"Failed to establish a new connection: {e}") from e
+    return sock
+
+
 def _pinned_adapter(ip):
     """A requests adapter whose connections dial `ip` whatever the URL's host
-    resolves to now. urllib3 dials `_dns_host` and keeps `host` for the Host
-    header, SNI and certificate checks."""
+    resolves to now, while the Host header, SNI and certificate checks keep
+    using the URL's hostname."""
     class PinnedHTTPConnection(HTTPConnection):
         def _new_conn(self):
-            self._dns_host = ip
-            return super()._new_conn()
+            return _dial(self, ip)
 
     class PinnedHTTPSConnection(HTTPSConnection):
         def _new_conn(self):
-            self._dns_host = ip
-            return super()._new_conn()
+            return _dial(self, ip)
 
     class PinnedHTTPPool(HTTPConnectionPool):
         ConnectionCls = PinnedHTTPConnection
