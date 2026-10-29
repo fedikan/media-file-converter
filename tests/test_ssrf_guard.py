@@ -74,6 +74,21 @@ class GuardTests(unittest.TestCase):
         finally:
             server.shutdown()
 
+    def test_pinned_https_keeps_the_hostname_for_sni_and_cert_check(self):
+        # Prod 2026-10-28: SNI went out as the bare IP and the CDN (Cloudflare)
+        # refused the handshake, so every https media download failed.
+        import urllib3.connection
+        adapter = ssrf_guard._pinned_adapter('203.0.113.7')
+        pool = adapter.poolmanager.connection_from_url('https://cdn.example.test/a.mp4')
+        conn = pool.ConnectionCls('cdn.example.test', 443)
+        with mock.patch('urllib3.util.connection.create_connection', return_value=mock.MagicMock()) as dial, \
+                mock.patch.object(urllib3.connection, '_ssl_wrap_socket_and_match_hostname') as wrap:
+            wrap.return_value = mock.MagicMock(socket=mock.MagicMock(), is_verified=True, proxy_is_verified=None)
+            conn.connect()
+        self.assertEqual(dial.call_args[0][0], ('203.0.113.7', 443))
+        self.assertEqual(wrap.call_args.kwargs['server_hostname'], 'cdn.example.test')
+        self.assertEqual(conn.host, 'cdn.example.test')
+
     def test_playlists_and_reference_files_are_detected(self):
         cases = {
             b'#EXTM3U\n#EXT-X-VERSION:3\nhttp://127.0.0.1/seg.ts\n': True,
