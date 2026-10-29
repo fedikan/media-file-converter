@@ -1,7 +1,7 @@
 Flask==2.3.3
 Werkzeug>=3.0,<3.1
 ffmpeg-python==0.2.0
-numpy==1.24.3
+numpy==2.5.4
 scipy==1.11.1
 # Pillow / OpenCV bundle libwebp: keep both on releases with libwebp >= 1.3.2
 # (CVE-2023-4863 heap overflow, reachable through image uploads and the OG
